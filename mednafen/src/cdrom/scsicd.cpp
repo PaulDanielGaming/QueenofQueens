@@ -2061,6 +2061,22 @@ static void DoREADBase(uint32 sa, uint32 sc)
  {
   // If this is not SCSICD_PCE (i.e. a PC-FX).
   CDReadTimer = ((uint64) 1 * 2048 * System_Clock) / CD_DATA_TRANSFER_RATE;
+
+  // QoQ private build: PC-FX seek-latency model (stock leaves this unmodeled).
+  // Adds laser-head seek latency proportional to head travel, so a jump to a new
+  // clip's LBA earns a real gap (the hardware input window). Note: the model has a
+  // floor of roughly 200ms even for a same-spot read, so "sequential" reads are not
+  // truly zero-cost -- QoQ still plays smoothly because it reads each clip as one
+  // large command, so the delay lands once per clip boundary, not once per sector.
+  // Audio runs on a separate path and is unaffected.
+  // SEEK_SCALE is the calibration knob. 1.0f is the raw PCE seek curve (calibrated to
+  // the PC Engine's single-speed drive), which ran a bit long against real PC-FX
+  // hardware (double-speed drive) on first listen. 0.5f is an ungrounded first guess
+  // at the ratio, not a measured value -- adjust further by ear, or see the build
+  // notes for the two-point method if a real calibration is ever wanted.
+  const float SEEK_SCALE = 0.5f;
+  seekms = get_pce_cd_seek_ms(head_pos, sa) * SEEK_SCALE;
+  CDReadTimer += ((uint64) System_Clock * seekms) / 1000;
  }
 
  if(SCSILog)
