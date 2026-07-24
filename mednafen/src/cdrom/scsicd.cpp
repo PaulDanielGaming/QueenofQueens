@@ -2069,13 +2069,17 @@ static void DoREADBase(uint32 sa, uint32 sc)
   // truly zero-cost -- QoQ still plays smoothly because it reads each clip as one
   // large command, so the delay lands once per clip boundary, not once per sector.
   // Audio runs on a separate path and is unaffected.
-  // SEEK_SCALE is the calibration knob. 1.0f is the raw PCE seek curve (calibrated to
-  // the PC Engine's single-speed drive), which ran a bit long against real PC-FX
-  // hardware (double-speed drive) on first listen. 0.5f is an ungrounded first guess
-  // at the ratio, not a measured value -- adjust further by ear, or see the build
-  // notes for the two-point method if a real calibration is ever wanted.
-  const float SEEK_SCALE = 0.5f;
-  seekms = get_pce_cd_seek_ms(head_pos, sa) * SEEK_SCALE;
+  // seek_scale is the calibration knob, now read from the pcfx.cd_seek_scale setting
+  // (registered in PCFXSettings in pcfx.cpp) so it can be tuned live from mednafen.cfg
+  // with no rebuild. 1.0 is the raw PCE seek curve (calibrated to the PC Engine's
+  // single-speed drive), which runs long against the PC-FX's faster double-speed drive.
+  // Tuning history: 1.0 too long, 0.7 closer but still long, 0.6 within a frame or two
+  // on a hardware side-by-side but a touch long, 0.5 the current default and beta 2
+  // value. All by eye, not frame-counted -- see the build notes for the two-point method
+  // if exact calibration is ever wanted. NOTE: 0.5 was calibrated on the ~1% fast base;
+  // recheck it after rebasing onto a timing-corrected base.
+  const float seek_scale = MDFN_GetSettingF("pcfx.cd_seek_scale");
+  seekms = get_pce_cd_seek_ms(head_pos, sa) * seek_scale;
   CDReadTimer += ((uint64) System_Clock * seekms) / 1000;
  }
 
