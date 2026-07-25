@@ -1158,6 +1158,8 @@ static const MDFNSetting PCFXSettings[] =
   { "pcfx.main_memory_size_mbytes", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Size of main memory, in megabytes (original console was 2)."), NULL, MDFNST_UINT, "2", "2", "8" },
   { "pcfx.cdspeed", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Emulated CD-ROM speed."), gettext_noop("Setting the value higher than 2, the default, will decrease loading times in most games by some degree."), MDFNST_UINT, "2", "2", "10" },
 
+  { "pcfx.cd_seek_scale", MDFNSF_NOFLAGS, gettext_noop("Scale factor for simulated CD seek latency."), gettext_noop("QoQ private build. Scales the PCE-derived laser-head seek delay applied on PC-FX CD reads. 0 disables the delay, 1.0 is the full curve, values below 1 shorten the pause. Default 0.5 is calibrated by eye against real hardware."), MDFNST_FLOAT, "0.5", "0.0", "2.0" },
+
   { "pcfx.nospritelimit", MDFNSF_NOFLAGS, gettext_noop("Remove 16-sprites-per-scanline hardware limit."), NULL, MDFNST_BOOL, "0" },
   { "pcfx.high_dotclock_width", MDFNSF_NOFLAGS, gettext_noop("Emulated width for 7.16MHz dot-clock mode."), gettext_noop("Lower values are faster, but will cause some degree of pixel distortion."), MDFNST_ENUM, "1024", NULL, NULL, NULL, NULL, HDCWidthList },
 
