@@ -775,6 +775,45 @@ void RAINBOW_DecodeBlock(bool arg_FirstDecode, bool Skip)
      }
     }
 
+    // BLOCKS v32: drain trailing quantizer rescales.
+    //
+    // The encoder emits rescale opcodes AFTER the last macroblock column, to set
+    // up the quantizer for the NEXT strip. The 16-column loop above exits as soon
+    // as column reaches 16, so those opcodes are never read and the following
+    // strip decodes with a stale quantizer. Measured on QoQ Disc B: strips ending
+    // on q0=2 carry a trailing RESCALE back to q0=3 that Mednafen discards, which
+    // is why the leading columns of the next strip decode one quantizer step too
+    // weak and render dark flat blocks as grey instead of black.
+    //
+    // Only rescale opcodes are consumed here; the first non-rescale code is the
+    // zero padding that fills out the block, and we stop there.
+    while(bits_bytes_left > 0)
+    {
+     uint32 rawbits = GetBits(9, MDFNBITS_PEEK);
+     uint32 code = dc_y_qlut[rawbits].val;
+
+     if(code < 0x10)
+      break;
+
+     SkipBits(dc_y_qlut[rawbits].bitc);
+     code -= 0x10;
+
+     for(int i = 0; i < 64; i++)
+     {
+      uint32 coeff = (QuantTablesBase[0][i] * code) >> 2;
+      if(coeff < 1) coeff = 1; else if(coeff > 0xFE) coeff = 0xFE;
+      QuantTables[0][i] = coeff;
+
+      if(i)
+       coeff = (QuantTablesBase[1][i] * code) >> 2;
+      else
+       coeff = (QuantTablesBase[1][i]) >> 2;
+
+      if(coeff < 1) coeff = 1; else if(coeff > 0xFE) coeff = 0xFE;
+      QuantTables[1][i] = coeff;
+     }
+    }
+
     // Do bilinear interpolation on the chroma channels:
     if(!Skip && ChromaIP)
     {
