@@ -39,6 +39,41 @@
 #include "pcfx.h"
 #include <cmath>
 #include "king.h"
+
+// ---- NTSC composite/S-Video signal simulation (Paul Daniel) ----
+// blargg's snes_ntsc, LGPL. Recreates the analog bandwidth limiting and chroma
+// bleed that a CRT performs, which is what fills in hard luma edges instead of
+// merely blurring them. See pcfx.ntsc* settings.
+#include "ntsc/snes_ntsc.h"
+// Compiled straight into this translation unit so no build-system change is
+// needed - the CI workflow runs configure+make without autoreconf, so an
+// edit to Makefile.am.inc would never take effect.
+#include "ntsc/snes_ntsc.inc"
+
+static double PCFX_ChromaGain = 1.08;   // pcfx.chroma_gain
+static uint8 PCFX_GammaLUT[256];
+
+static void PCFX_RebuildGammaLUT(double gamma)
+{
+ for(int i = 0; i < 256; i++)
+ {
+  if(gamma == 1.0)
+   PCFX_GammaLUT[i] = i;
+  else
+  {
+   double v = pow(i / 255.0, 1.0 / gamma) * 255.0;
+   PCFX_GammaLUT[i] = (uint8)((v < 0.0) ? 0.0 : (v > 255.0) ? 255.0 : (v + 0.5));
+  }
+ }
+}
+
+
+
+static snes_ntsc_t* PCFX_NTSC = NULL;
+static int PCFX_NTSC_BurstPhase = 0;
+enum { PCFX_NTSC_IN_W = 256 };
+enum { PCFX_NTSC_OUT_W = SNES_NTSC_OUT_WIDTH(PCFX_NTSC_IN_W) };   // 256 -> 602
+
 #include <mednafen/cdrom/scsicd.h>
 #include "interrupt.h"
 #include "rainbow.h"
@@ -910,6 +945,8 @@ void KING_EndFrame(v810_timestamp_t timestamp)
  scsicd_ne = SCSICD_Run(timestamp);
 }
 
+void KING_NTSC_NextField(void) { PCFX_NTSC_BurstPhase = (PCFX_NTSC_BurstPhase + 1) % 3; }
+
 void KING_ResetTS(v810_timestamp_t ts_base)
 {
  SCSICD_ResetTS(ts_base);
@@ -1769,6 +1806,45 @@ static void Cleanup(void)
 
 void KING_Init(void)
 {
+
+ PCFX_ChromaGain = MDFN_GetSettingF("pcfx.chroma_gain");
+ PCFX_RebuildGammaLUT(MDFN_GetSettingF("pcfx.gamma"));
+
+ // ---- NTSC filter setup ----
+ {
+  const std::string mode = MDFN_GetSettingS("pcfx.ntsc");
+
+  if(PCFX_NTSC) { free(PCFX_NTSC); PCFX_NTSC = NULL; }
+
+  if(mode != "off")
+  {
+   snes_ntsc_setup_t setup;
+
+   if(mode == "composite")       setup = snes_ntsc_composite;
+   else if(mode == "svideo")     setup = snes_ntsc_svideo;
+   else if(mode == "rgb")        setup = snes_ntsc_rgb;
+   else                          setup = snes_ntsc_monochrome;
+
+   // Exposed so the look can be dialled in against real hardware without a
+   // rebuild. sharpness and resolution are the two that actually soften hard
+   // luma edges; the presets alone leave those nearly as steep as unfiltered.
+   // These are OFFSETS from the chosen preset, not absolute values. Each
+   // preset carries its own tuning - S-Video for instance sets sharpness and
+   // resolution to 0.2 and turns artifacts and fringing OFF at -1 - so
+   // assigning here would clobber that and make S-Video look like composite.
+   // 0.0 therefore means "use the preset as the author intended".
+   setup.sharpness  += MDFN_GetSettingF("pcfx.ntsc.sharpness");
+   setup.resolution += MDFN_GetSettingF("pcfx.ntsc.resolution");
+   setup.bleed      += MDFN_GetSettingF("pcfx.ntsc.bleed");
+   setup.fringing   += MDFN_GetSettingF("pcfx.ntsc.fringing");
+   setup.brightness += MDFN_GetSettingF("pcfx.ntsc.brightness");
+   setup.contrast   += MDFN_GetSettingF("pcfx.ntsc.contrast");
+
+   PCFX_NTSC = (snes_ntsc_t*)malloc(sizeof(snes_ntsc_t));
+   if(PCFX_NTSC)
+    snes_ntsc_init(PCFX_NTSC, &setup);
+  }
+ }
  try
  {
   king = new king_t();
@@ -1854,6 +1930,8 @@ void KING_Init(void)
 
 void KING_Close(void)
 {
+ if(PCFX_NTSC) { free(PCFX_NTSC); PCFX_NTSC = NULL; }
+
  Cleanup();
 }
 
@@ -2436,7 +2514,7 @@ static void RebuildUVLUT(const MDFN_PixelFormat &format)
    // 1.08 sits about halfway - a deliberate, subtle enrichment.
    //
    // Also rounds instead of truncating toward zero (the old FIXME).
-   static const double CHROMA_GAIN = 1.08;
+   const double CHROMA_GAIN = PCFX_ChromaGain;
 
    r = (int)lrint( 1.402000 * CHROMA_GAIN * v);
    g = (int)lrint(-0.344136 * CHROMA_GAIN * u - 0.714136 * CHROMA_GAIN * v);
@@ -2470,6 +2548,13 @@ static uint32 INLINE YUV888_TO_RGB888(uint32 yuv)
  r = clamp_to_u8(r);
  g = clamp_to_u8(g);
  b = clamp_to_u8(b);
+
+ // Midtone gamma. Values below 1.0 pull the middle of the range down while
+ // leaving black at black and white at white, which reads as deeper, richer
+ // colour rather than a dimmer picture. See pcfx.gamma.
+ r = PCFX_GammaLUT[r];
+ g = PCFX_GammaLUT[g];
+ b = PCFX_GammaLUT[b];
 
  return((r << rs) | (g << gs) | (b << bs));
 }
@@ -2975,6 +3060,32 @@ static void MixLayers(void)
 
     DisplayRect->w = fx_vce.dot_clock ? HighDotClockWidth : 256;
     DisplayRect->x = 0;
+
+    // NTSC signal simulation. Only the 256-wide mode is filtered; the high
+    // dot-clock modes are passed through untouched.
+    if(PCFX_NTSC && !fx_vce.dot_clock)
+    {
+     uint16 nin[PCFX_NTSC_IN_W];
+     uint32 nout[PCFX_NTSC_OUT_W];
+
+     for(int x = 0; x < PCFX_NTSC_IN_W; x++)
+     {
+      const uint32 p = target[x];
+      // Round rather than truncate. A bare mask biases every channel down by
+      // half a step, which measurably darkens the whole picture.
+      uint32 pr = (p >> 16) & 0xFF, pg = (p >> 8) & 0xFF, pb = p & 0xFF;
+      pr = (pr + 4 > 255) ? 255 : pr + 4;
+      pg = (pg + 2 > 255) ? 255 : pg + 2;
+      pb = (pb + 4 > 255) ? 255 : pb + 4;
+      nin[x] = ((pr & 0xF8) << 8) | ((pg & 0xFC) << 3) | (pb >> 3);
+     }
+
+     snes_ntsc_blit(PCFX_NTSC, nin, PCFX_NTSC_IN_W, PCFX_NTSC_BurstPhase,
+                    PCFX_NTSC_IN_W, 1, nout, PCFX_NTSC_OUT_W * sizeof(uint32));
+
+     memcpy(target, nout, PCFX_NTSC_OUT_W * sizeof(uint32));
+     DisplayRect->w = PCFX_NTSC_OUT_W;
+    }
 
 	// FIXME
     if(fx_vce.frame_interlaced)

@@ -1139,6 +1139,16 @@ static const MDFNSetting_EnumList HDCWidthList[] =
  { NULL, 0 },
 };
 
+static const MDFNSetting_EnumList NTSCModeList[] =
+{
+ { "off",        0, gettext_noop("Disabled"), gettext_noop("Raw 256-wide output, no filtering.") },
+ { "svideo",     1, gettext_noop("S-Video"), gettext_noop("Colour bleed without composite artifacts.") },
+ { "composite",  2, gettext_noop("Composite"), gettext_noop("Colour bleed plus dot crawl and artifacts.") },
+ { "rgb",        3, gettext_noop("RGB"), gettext_noop("Crisp; minimal artifacts.") },
+ { "monochrome", 4, gettext_noop("Monochrome"), gettext_noop("Desaturated with artifacts.") },
+ { NULL, 0 },
+};
+
 static const MDFNSetting PCFXSettings[] =
 {
   { "pcfx.input.port1.multitap", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Enable multitap on PC-FX port 1."), gettext_noop("EXPERIMENTAL emulation of the unreleased multitap.  Enables ports 3 4 5."), MDFNST_BOOL, "0", NULL, NULL },
@@ -1156,9 +1166,17 @@ static const MDFNSetting PCFXSettings[] =
   { "pcfx.internal_bram_size_kbytes", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Size of internal Backup memory file, in kilobytes. Intended for developers only."), NULL, MDFNST_UINT, "32", "32", "128" },
   { "pcfx.external_bram_size_kbytes", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Size of external Backup memory file, in kilobytes (i.e. FX-BMP cartridge)."), NULL, MDFNST_UINT, "128", "128", "8192" },
   { "pcfx.main_memory_size_mbytes", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Size of main memory, in megabytes (original console was 2)."), NULL, MDFNST_UINT, "2", "2", "8" },
+  { "pcfx.cd_seek_scale", MDFNSF_NOFLAGS, gettext_noop("Scale factor for simulated CD seek latency."), gettext_noop("Scales the head-travel delay applied to CD reads. 0 disables the delay entirely; 1.0 is the full modelled seek time."), MDFNST_FLOAT, "0.6", "0.0", "2.0" },
+  { "pcfx.chroma_gain", MDFNSF_NOFLAGS, gettext_noop("Chroma gain applied to the YUV to RGB matrix."), gettext_noop("Above 1.0 trims residual opposite-channel content out of saturated colours, turning bright red into crimson. 1.0 is plain BT.601; 1.1384 is the full limited-range to full-range chroma correction."), MDFNST_FLOAT, "1.08", "0.50", "2.00" },
+  { "pcfx.gamma", MDFNSF_NOFLAGS, gettext_noop("Midtone gamma."), gettext_noop("Below 1.0 pulls midtones down while leaving black and white alone, which makes saturated colours read deeper and richer. 1.0 disables."), MDFNST_FLOAT, "0.85", "0.50", "2.00" },
+  { "pcfx.ntsc", MDFNSF_NOFLAGS, gettext_noop("NTSC video signal simulation."), gettext_noop("Recreates the analog bandwidth limiting and chroma bleed a CRT performs, which fills in hard luma edges rather than merely blurring them. Widens output to 602 pixels, so xscale needs reducing to suit."), MDFNST_ENUM, "off", NULL, NULL, NULL, NULL, NTSCModeList },
+  { "pcfx.ntsc.sharpness", MDFNSF_NOFLAGS, gettext_noop("NTSC edge sharpness."), gettext_noop("Lower values soften hard luma edges, which is what removes stair-stepping on diagonals."), MDFNST_FLOAT, "0.0", "-2.0", "2.0" },
+  { "pcfx.ntsc.resolution", MDFNSF_NOFLAGS, gettext_noop("NTSC image resolution."), gettext_noop("Lower values reduce horizontal detail, widening edge transitions."), MDFNST_FLOAT, "0.0", "-2.0", "2.0" },
+  { "pcfx.ntsc.brightness", MDFNSF_NOFLAGS, gettext_noop("NTSC brightness offset."), gettext_noop("The filter costs roughly 5%% brightness; the default compensates for it. Offset from the preset, 0.0 leaves it alone."), MDFNST_FLOAT, "0.05", "-1.0", "1.0" },
+  { "pcfx.ntsc.contrast", MDFNSF_NOFLAGS, gettext_noop("NTSC contrast offset."), nullptr, MDFNST_FLOAT, "0.0", "-1.0", "1.0" },
+  { "pcfx.ntsc.bleed", MDFNSF_NOFLAGS, gettext_noop("NTSC colour bleed."), nullptr, MDFNST_FLOAT, "0.0", "-2.0", "2.0" },
+  { "pcfx.ntsc.fringing", MDFNSF_NOFLAGS, gettext_noop("NTSC colour fringing on brightness changes."), nullptr, MDFNST_FLOAT, "0.0", "-2.0", "2.0" },
   { "pcfx.cdspeed", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Emulated CD-ROM speed."), gettext_noop("Setting the value higher than 2, the default, will decrease loading times in most games by some degree."), MDFNST_UINT, "2", "2", "10" },
-
-  { "pcfx.cd_seek_scale", MDFNSF_NOFLAGS, gettext_noop("Scale factor for simulated CD seek latency."), gettext_noop("QoQ private build. Scales the PCE-derived laser-head seek delay applied on PC-FX CD reads. 0 disables the delay, 1.0 is the full curve, values below 1 shorten the pause. Default 0.5 is calibrated by eye against real hardware."), MDFNST_FLOAT, "0.5", "0.0", "2.0" },
 
   { "pcfx.nospritelimit", MDFNSF_NOFLAGS, gettext_noop("Remove 16-sprites-per-scanline hardware limit."), NULL, MDFNST_BOOL, "0" },
   { "pcfx.high_dotclock_width", MDFNSF_NOFLAGS, gettext_noop("Emulated width for 7.16MHz dot-clock mode."), gettext_noop("Lower values are faster, but will cause some degree of pixel distortion."), MDFNST_ENUM, "1024", NULL, NULL, NULL, NULL, HDCWidthList },
