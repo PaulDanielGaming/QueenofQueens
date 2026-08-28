@@ -1,6 +1,9 @@
 name: Build
 
-on: [push, pull_request, workflow_dispatch]
+# Manual only. Push no longer triggers a build, so you can upload as many
+# files as you like without burning minutes or artifact storage. When the
+# files are all in place, go to Actions -> Build -> Run workflow.
+on: [workflow_dispatch]
 
 permissions:
   contents: read
@@ -28,22 +31,10 @@ jobs:
         with:
           name: Mednafen (Windows)
           path: dist/*
+          # Expire automatically so artifacts stop accumulating against the
+          # storage quota. Download the build you want within the week.
+          retention-days: 7
 
-  # === Linux (Ubuntu 22.04) ===
-  linux64:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Install required dependencies
-        run: sudo apt-get update && sudo apt-get install build-essential pkg-config libasound2-dev libflac-dev libsdl2-dev zip zlib1g-dev
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: mednafen/configure
-      - name: Build
-        run: make -j$(nproc)
-      - name: Package artifact
-        run: mkdir dist && cp src/mednafen mednafen/COPYING dist/
-      - name: Archive artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Mednafen (Linux)
-          path: dist/*
+# The Linux job has been removed - the G2 builds and sanity-checks Linux
+# locally, so running it here duplicated that work and doubled the artifact
+# storage for no benefit.
