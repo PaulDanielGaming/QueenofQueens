@@ -1,0 +1,138 @@
+================================================================
+RAINBOW trailing-opcode probe
+Reproduces the trailing quantizer rescale finding from any
+Mednafen PC-FX build - Paul Daniel
+================================================================
+
+WHAT THIS DOES
+----------------------------------------------------------------
+  Mednafen's strip decoder stops reading a strip's bitstream as
+  soon as it has produced 16 macroblock columns. This probe
+  reports what is still sitting unread at that point.
+
+  On AJW Queen of Queens it shows quantizer RESCALE opcodes
+  being discarded - opcodes the encoder emitted to set up the
+  quantizer for the NEXT strip.
+
+  Takes about ten minutes end to end.
+
+IMPORTANT
+----------------------------------------------------------------
+  This probe CONSUMES bits from the stream, so it changes decode
+  behaviour. It is a diagnostic only. Do not judge picture
+  quality with it compiled in, and remove it afterwards.
+
+WHERE TO PUT IT
+----------------------------------------------------------------
+  In pcfx/rainbow.cpp, find the strip decode loop:
+
+      for(int column = 0; column < 16; column++)
+      {
+        ...
+      }
+
+  Insert the block below immediately AFTER that loop closes.
+  In a stock tree the next thing you will see is the comment
+  "// Do bilinear interpolation on the chroma channels:" -
+  put the probe just above that line.
+
+THE PROBE
+----------------------------------------------------------------
+
+    // ---- RAINBOW trailing-opcode probe (diagnostic, remove after use) ----
+    {
+     static unsigned long probe_strip = 0;
+
+     if(probe_strip < 4000)
+     {
+      char seq[192];
+      int p = 0;
+      seq[0] = 0;
+
+      for(int k = 0; k < 6; k++)
+      {
+       if(bits_bytes_left <= 0)
+        break;
+
+       uint32 raw = GetBits(9, MDFNBITS_PEEK);
+       uint32 val = dc_y_qlut[raw].val;
+       SkipBits(dc_y_qlut[raw].bitc);
+
+       if(val >= 0x10)
+        p += snprintf(seq + p, sizeof(seq) - p, " RESCALE(q0->%u)",
+                      (unsigned)((QuantTablesBase[0][0] * (val - 0x10)) >> 2));
+       else if(val == 0xF)
+       {
+        p += snprintf(seq + p, sizeof(seq) - p, " NULLRUN");
+        break;
+       }
+       else
+       {
+        SkipBits(val);
+        p += snprintf(seq + p, sizeof(seq) - p, " DC(%u)", val);
+       }
+      }
+
+      fprintf(stderr, "TRAIL n=%lu q0_now=%u bytes_left=%d :%s\n",
+              probe_strip, (unsigned)QuantTables[0][0],
+              (int)bits_bytes_left, seq);
+      probe_strip++;
+     }
+    }
+    // ---- end probe ----
+
+HOW TO RUN IT
+----------------------------------------------------------------
+  Build, then run the game and reach a scene with dark flat
+  areas in FMV. On Queen of Queens (Disc B) that is:
+
+      Start -> Scenario Mode -> watch the intro video
+
+  The artifact appears roughly 35 seconds in, at the left edge.
+  Redirect stderr to a file:
+
+      mednafen yourdisc.cue 2> trail.log
+
+  Then look at the tail of the log while that scene is playing.
+
+WHAT YOU SHOULD SEE
+----------------------------------------------------------------
+  Strips that are already at the intended quantizer trail only
+  zero padding, which decodes as DC(0):
+
+      TRAIL n=... q0_now=3 bytes_left=3 : DC(0) DC(0) DC(0) ...
+
+  Strips sitting at a lower quantizer trail a rescale that
+  restores it, and that is the opcode being thrown away:
+
+      TRAIL n=... q0_now=2 bytes_left=8 : RESCALE(q0->3) DC(0) ...
+
+  Some strips trail a pair, netting the same result:
+
+      TRAIL n=... q0_now=3 bytes_left=9 : RESCALE(q0->2) RESCALE(q0->3) ...
+
+  The pattern is consistent: every strip is arranging to hand
+  the same quantizer to the next one. Because the column loop
+  has already exited, none of it is applied.
+
+CROSS-CHECK AGAINST HARDWARE
+----------------------------------------------------------------
+  If you have a capture of the same sequence from a real PC-FX,
+  the required quantizer can be solved directly, since output
+  luma is q * dc / 2 + 128:
+
+      q_required = 2 * (hw_luma - 128) / dc
+
+  Take dc from the decoder for the affected columns and hw_luma
+  from the matched capture frame. On the Queen of Queens
+  sequence this returns the value the discarded opcodes would
+  have set, and agrees with the emulator on every strip that is
+  not affected.
+
+  When comparing captures, crop to the active picture area
+  first. Matching an uncropped capture against emulator output
+  gives poor frame correlation and misleading results.
+
+================================================================
+                                               -- Paul Daniel
+================================================================

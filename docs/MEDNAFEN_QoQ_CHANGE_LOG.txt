@@ -1,0 +1,473 @@
+================================================================
+Mednafen PC-FX : change log for the Queen of Queens build
+               : Paul Daniel
+               : last updated 2026-09-02
+================================================================
+
+  Five improvements, across four files plus one added library.
+  Everything else is stock.
+
+      1. confetti bar repair            rainbow.cpp
+      2. CD seek latency between clips  scsicd.cpp + pcfx.cpp
+      3. grey block fix                 rainbow.cpp
+      4. colour approximation fix       king.cpp
+      5. NTSC signal simulation         king.cpp + ntsc/
+
+  The seek latency derives from David Shadoff's PC Engine CD
+  work — it reuses the existing get_pce_cd_seek_ms model.
+
+================================================================
+1. rainbow.cpp — CONFETTI REPAIR                    (frozen v20)
+----------------------------------------------------------------
+  PROBLEM
+    Partial-width coloured noise across one 16-pixel strip for
+    one to three frames during FMV. Reliable triggers: Manami
+    Toyota's dropkick and bridge-to-pin, Akira Hokuto's body
+    slam, northern lights bomb, and tope con hilo.
+
+  CAUSE
+    A mid-strip decode desync. Real hardware shows a milder
+    artifact at the same points, so the encoding in the game is
+    genuinely defective. The implementations differ in how
+    gracefully they degrade, not in whether they hit bad data.
+    Root cause of the desync was never established.
+
+  FIX
+    Detect a bad strip on either of two independent triggers:
+      - the decoded picture measures as noise, on luma AND
+        chroma (chroma matters: Toyota's dropkick corruption is
+        coloured and scores near zero on luma alone)
+      - the block runs more than 8 bytes short of its declared
+        size (starvation)
+    Repair by repeating that strip from the previous frame.
+    Repairs are grouped into contiguous runs, absorbing gaps of
+    up to two columns. Noise floor is 60.
+
+  WHY REPEAT RATHER THAN RECONSTRUCT
+    No reconstruction avoids looking unnatural, and real PC-FX
+    hardware already pauses video during disc access, so a
+    briefly repeated frame reads as normal.
+
+  VALIDATION
+    22 repairs across 250,000 strips. Not visible in gameplay;
+    only findable by reading the log. A magenta test build
+    confirmed the repair reaches the screen and that every
+    observed glitch had a matching log entry.
+
+  REJECTED ALONG THE WAY
+    v1/v2  hold on icount exhaustion
+    v3     over-read past declared block size (made the bar
+           escape the FMV window)
+    v4-v6  restore previous frame's row (jitter, row drift)
+    v7     fill columns after starvation (fixed jitter, missed
+           the corruption)
+    v15    luma-only detection (missed coloured corruption)
+
+================================================================
+2. rainbow.cpp — GREY BLOCKS                             (v32)
+----------------------------------------------------------------
+  PROBLEM
+    Dark grey rectangles, uniform RGB(43,43,43), at columns 0-1
+    of strips 9-10 (screen x 0-31, y 144-175) during the Disc B
+    scenario FMV. Also lifted black level and colour speckle in
+    dark scenes generally, including the Disc A intro.
+
+  CAUSE
+    The encoder emits quantizer RESCALE opcodes AFTER the last
+    macroblock column, to set up the quantizer for the NEXT
+    strip. The decode loop
+
+        for(int column = 0; column < 16; column++)
+
+    exits the instant column reaches 16, so those opcodes are
+    never read and the following strip decodes with a stale
+    quantizer. Probing the unread bits at frame 99 showed:
+
+        strip  6  q0=3 : DC(0) padding only
+        strip  7  q0=3 : DC(0) padding only
+        strip  8  q0=2 : RESCALE(q0->3) then padding
+        strip  9  q0=2 : RESCALE(q0->3) then padding
+        strip 10  q0=3 : RESCALE(q0->2) RESCALE(q0->3)
+        strip 11  q0=3 : RESCALE(q0->2) RESCALE(q0->3)
+
+    Every strip is arranging to hand q0=3 to the next one.
+
+  INDEPENDENT CONFIRMATION
+    Solving the required quantizer from a real hardware capture,
+    using luma = q * dc / 2 + 128, gives q = 3.00 for the
+    affected strips and agrees with the emulator on every strip
+    that is not affected (1.00, 3.01, 2.98).
+
+  FIX
+    After the column loop, before the chroma interpolation
+    block, drain trailing rescales: while bits remain, peek 9
+    bits through dc_y_qlut, break on the first code below 0x10
+    (that is the zero padding), otherwise SkipBits and run the
+    same rescale body used in get_dc_coeff.
+
+  VALIDATION
+    FMV grey blocks              95  ->  1
+    FMV mean luma              19.1  ->  18.2
+    BIOS boot logo               pixel-identical
+    Key Tips portrait screen     pixel-identical
+    hardware error, 45 pairs    6.60  ->  4.56
+    artifact region            38.42  ->  4.52
+    rest of frame               5.88  ->  4.51
+
+    The new code executes ONLY in FMV. Counted zero times on
+    cold boot, wrestler select, results screen, menus and the
+    Key Tips clip, which is why those paths are unchanged.
+
+  CONFIRMED on hardware-equivalent testing: grey blocks gone,
+  portraits intact, confetti repair still behaving, Disc A
+  intro shows less colour speckle in black areas.
+
+  REJECTED ALONG THE WAY
+    v21  code -= 0x0F              strobing and pixelation
+    v22  per-strip quant reset     wrecked the BIOS logo
+                                   (QuantTablesBase is zero
+                                   until the first 0xFF block)
+    v28  null-run reset to base    destroyed stills/portraits
+    v30  null-run restore to
+         strip-entry value         destroyed stills/portraits
+    v29  Y-only strip-local        posterised the BIOS logo,
+                                   proving quantizer carry
+                                   across strips is mandatory
+    also ceiling rounding, Y DC unscaled
+
+    KEY RULE learned: null runs must not touch the quantizer,
+    and quantizer state must carry across strips.
+
+================================================================
+3. scsicd.cpp — CD SEEK LATENCY
+----------------------------------------------------------------
+  PROBLEM
+    Mednafen jumps between FMV clips instantly. Real hardware
+    moves a laser head, so there is a visible gap.
+
+  FIX
+    A head-travel-proportional delay in DoREADBase, reusing the
+    existing get_pce_cd_seek_ms model. Clip-to-clip jumps get a
+    real gap; sequential reads inside a clip stay near zero.
+
+  NOTES
+    - The PCE seek curve is an approximation for the PC-FX's
+      faster drive.
+    - The branch affects ALL PC-FX CD reads, so it is not
+      validated beyond Queen of Queens.
+    - Game music keeps playing through the gap, exactly as on
+      hardware, confirming the delay is scoped to video-clip
+      data reads and leaves the CD audio path untouched.
+    - This is the same read path core timing work would touch,
+      so a hand-merge may be needed rather than an overwrite.
+
+  CALIBRATION HISTORY
+    1.0 too long, 0.7 still slightly long, 0.5 and 0.6 could not
+    be told apart by eye in side-by-side testing (emulator on an
+    LCD versus real PC-FX through tink2x on a CRT, same
+    wrestlers). Settled at 0.5. Chosen by eye, not frame
+    counted, and deliberately not nitpicked further.
+
+  REJECTED
+    An earlier attempt in king.cpp, inflating RAINBOWBusyCount
+    at clip start (FirstDecode), broke video badly — flicker
+    and the picture no longer centred. king.cpp was reverted to
+    stock and carried no changes at all until the colour work
+    below.
+
+================================================================
+4. pcfx.cpp — SEEK SCALE SETTING
+----------------------------------------------------------------
+  Registers pcfx.cd_seek_scale in PCFXSettings, next to
+  pcfx.cdspeed. MDFNST_FLOAT, default 0.5, range 0.0 to 2.0,
+  where 0 disables the delay entirely.
+
+  scsicd.cpp reads it through MDFN_GetSettingF at the point of
+  use, replacing the old hardcoded constant. Seek tuning is now
+  done live in mednafen.cfg with no rebuild.
+
+  This setting exists only in this build. Stock Mednafen
+  ignores the key and strips it from the cfg.
+
+================================================================
+5. king.cpp — COLOUR MATRIX
+----------------------------------------------------------------
+  PROBLEM
+    Colour is muted versus real hardware. Red reads washed out
+    and pink rather than deep (Aja Kong's singlet is the clearest
+    case), yellow is muted, and saturated blue renders whitish.
+    Confirmed not a display issue: blue shows correctly on both
+    the CRT and the capture.
+
+  CAUSE
+    RebuildUVLUT used the ANALOG YUV matrix — the composite
+    video one, where U and V are pre-scaled by 0.492 and 0.877:
+
+        R = 1.1398 V
+        G = -0.3946 U - 0.5805 V
+        B = 2.0320 U
+
+    RAINBOW is a motion-JPEG decoder, and JPEG is defined on
+    full-range BT.601 YCbCr:
+
+        R = 1.402 Cr
+        G = -0.344 Cb - 0.714 Cr
+        B = 1.772 Cb
+
+    Stock under-saturates red by about 19% and over-scales blue
+    by about 15%. The conversion also truncated toward zero via
+    an (int) cast rather than rounding — the source carried a
+    "FIXME: Use lrint()?" on exactly that line.
+
+  EVIDENCE
+    Round-trip test: encode known colours as BT.601, decode with
+    each matrix, measure error.
+
+      colour              target      stock decode
+      saturated red     (255,0,0)   (221.5, 19.2, 0)
+      Aja singlet red   (190,40,45) (170.4, 51.1, 39.1)
+      strong yellow     (235,215,40)(228.6, 222.8, 16.5)
+      menu blue         (40,60,200) (45.6, 53.5, 219.0)
+
+    Mean error over ten test colours: stock 9.34, BT.601 0.04.
+    The way stock fails matches the observed symptoms exactly —
+    red loses saturation and gains green, blue overshoots toward
+    white.
+
+  FIX
+    BT.601 coefficients, and lrint instead of the (int) cast.
+
+  MEASURED ON SCREEN (wrestler select)
+    Aja's singlet redness   60.3 -> 66.3
+    red pixel count        4540  -> 5728
+    overall saturation     69.07 -> 70.61
+    green background G     181.4 -> 189.2
+    yellow                 essentially unchanged; hue shifts
+                           slightly warmer (R +5.5, G -4.4)
+
+  RESULT ON HARDWARE-EQUIVALENT TESTING
+    Measured off screenshots from the built emulator:
+
+      Hardin's costume   R 241.3  G 206.7  B 105.1
+                         yellowness 101.6
+      Aja's singlet      R 179.2  G  76.0  B  71.1
+                         redness     93.4
+
+    Skintone, Aja's red and Hardin's yellow all clearly better.
+    Accepted as done.
+
+  STILL OPEN — WASHED-OUT BLUE ON VDC/MENU TEXT
+    The Key Tips menu text measures R 207.0 G 215.8 B 254.3,
+    blueness only 25.1. B is pinned at maximum, so it cannot go
+    higher. The text reads pale because R and G are ALSO high —
+    it is a bright glyph, Y around 215, so blue clips while red
+    and green stay near white.
+
+    Chroma gain does not reach this. Raising it pushes B further
+    past a ceiling it has already hit and moves G by under one
+    point. The limit is the clip, not the coefficients.
+
+    Candidate causes, indistinguishable from here:
+      - the 4-bit palette chroma expansion. RedoPaletteCache
+        does U = (YUV & 0xF0) and V = (YUV & 0x0F) << 4, a bare
+        shift, so a nibble maps to 0-240 rather than 0-255.
+        Negative chroma reaches -128 but positive only +112,
+        i.e. 88% of full. Worth perhaps 4-6 points of G
+        reduction on that text — not enough on its own. Note
+        the obvious alternative, (v << 4) | v, reaches full
+        range but shifts neutral: nibble 8 lands on 136 rather
+        than 128, tinting greys.
+      - Y being read too wide
+      - the palette format not being Y:8 / U:4 / V:4 as assumed
+
+    WHAT WOULD UNBLOCK IT
+      A PC-FX test image displaying known YUV values, captured
+      from real hardware on a vectorscope. turboxray offered to
+      do the scope capture if someone builds the test image;
+      nobody has. Without that reference there is no way to tell
+      the three candidates apart, and the palette path feeds
+      EVERY VDC layer in every PC-FX game — so changing it on a
+      guess is high blast radius with no oracle.
+
+    Left alone deliberately. One menu screen against a change
+    that touches all menus, text and sprites everywhere.
+
+================================================================
+6. king.cpp + ntsc/ — NTSC SIGNAL SIMULATION
+----------------------------------------------------------------
+  PROBLEM
+    240p PC-FX content looks harsh on a modern display. The worst
+    case is Manami Toyota's long black hair against a light
+    background: a hard diagonal edge renders as a visible
+    staircase. A CRT handles it beautifully; an LCD does not.
+
+  WHY SCALERS DO NOT FIX IT
+    The stepping is in the source pixels. It is the same data a
+    real PC-FX sends to a CRT — the CRT just makes it look
+    better on the way out. Interpolation can only average
+    between existing pixels; it cannot invent the intermediate
+    values an analog signal actually carried.
+
+    hq2x, SABR and the 2xsai family are worse than useless here.
+    They analyse edges and synthesise new pixels, which suits
+    hand-drawn sprite art. PC-FX FMV is downsampled video and
+    was never meant to be seen as discrete pixels at all.
+
+  WHAT DOES FIX IT
+    NTSC signal simulation. blargg's snes_ntsc (LGPL) recreates
+    the analog bandwidth limiting and chroma bleed of a real
+    composite or S-Video path. A hard black-to-white edge comes
+    out as a genuine gradient with real intermediate values —
+    the steps are filled in, not blurred.
+
+    Measured on a hair edge, steepest single-pixel luma jump:
+        unfiltered                140.0
+        S-Video, defaults          67.0
+        S-Video, sharp/res -1     31.0
+    with mean slope essentially unchanged, so detail survives.
+
+  HOW IT IS WIRED IN
+    Library at pcfx/ntsc/. Input is the core's RGB888 line,
+    reduced to RGB16 (rounded, not truncated — a bare mask
+    biases the whole picture darker by about 1%). Output is
+    32-bit straight back into the surface.
+
+    Geometry: 3 pixels in, 7 out, so 256 becomes 602. The PC-FX
+    framebuffer is already 1024 wide so nothing reallocates.
+    Only the 256-wide mode is filtered; high dot-clock modes
+    pass through untouched.
+
+    Hook point is right after king_mix_body.inc produces the
+    line and before DisplayRect->w is set.
+
+  CRITICAL DELIVERY DETAIL
+    snes_ntsc is #included into king.cpp as ntsc/snes_ntsc.inc,
+    NOT compiled as a separate source file.
+
+    The GitHub CI workflow runs configure then make and never
+    calls autoreconf, so an edit to Makefile.am.inc is silently
+    ignored and the link fails. Including it directly means no
+    build-system change is needed at all. Verified by building
+    a pristine tree with a completely stock makefile.
+
+  TWO BUGS FOUND AFTER FIRST RELEASE
+    Preset clobbering. Each preset carries its own tuning —
+    S-Video sets sharpness 0.2, resolution 0.2 and fringing to
+    -1 meaning OFF. Assigning the settings replaced those, so
+    S-Video ran with composite's fringing and none of its
+    sharpness. Settings are now OFFSETS from the preset, so 0.0
+    means "leave the preset alone".
+
+    Brightness loss. The filter costs roughly 5%. Exposed as
+    pcfx.ntsc.brightness, which compensates after the gamma
+    stage so deep colours stay deep while the picture lifts.
+
+================================================================
+7. king.cpp — MIDTONE GAMMA
+----------------------------------------------------------------
+  Chroma gain purifies hue but RAISES red, so it makes colour
+  stronger rather than deeper. Deeper needs the midtones pulled
+  down while black and white stay put — that is gamma.
+
+  A 256-entry LUT applied at the end of YUV888_TO_RGB888.
+  Below 1.0 deepens; 1.0 disables.
+
+  Measured on Aja Kong's face paint, gamma 1.00 -> 0.85:
+      red   R183 G108 B94  ->  R174 G95 B81
+      blue  R103 G122 B174 ->  R88 G107 B163
+  Both deepen, and the blue gets purer as well as darker.
+
+  LESSON: judge colour on the FACE, not the singlet. A flat
+  colour patch is convenient to measure but hides the failure
+  that matters — a change that improves one colour by wrecking
+  another. The face has red, blue and skintone together.
+
+================================================================
+SETTINGS REFERENCE
+----------------------------------------------------------------
+  All live in mednafen.cfg, no rebuild needed.
+
+  pcfx.cd_seek_scale     0.0-2.0    CD head travel delay
+  pcfx.chroma_gain       0.5-2.0    colour purity, 1.0 = BT.601
+  pcfx.gamma             0.5-2.0    midtone depth, 1.0 = off
+  pcfx.ntsc              off | svideo | composite | rgb | monochrome
+  pcfx.ntsc.sharpness   -2.0-2.0    offset; lower softens edges
+  pcfx.ntsc.resolution  -2.0-2.0    offset; lower cuts detail.
+                                    Raising above 0 does nothing
+                                    measurable - 0 already passes
+                                    everything the signal carries.
+  pcfx.ntsc.brightness  -1.0-1.0    offset; compensates the filter
+  pcfx.ntsc.contrast    -1.0-1.0    offset
+  pcfx.ntsc.bleed       -2.0-2.0    offset
+  pcfx.ntsc.fringing    -2.0-2.0    offset
+
+  Anything but ntsc=off widens output 256 -> 602, so xscale
+  needs reducing to keep the same window size.
+
+  WARNING: Mednafen writes EVERY setting back to the cfg on
+  exit, including command-line flags. There is no temporary
+  override. A flag you pass once is a permanent change. To
+  experiment safely, use a scratch copy of the base directory,
+  or make the cfg read-only once you are happy with it.
+
+  ALSO: an unset setting is stored as "name " with a trailing
+  space — that space is the value separator and must not be
+  stripped. Only trim trailing whitespace where a real value
+  follows, or thousands of key bindings become unparseable.
+
+================================================================
+OPEN / UNRESOLVED
+----------------------------------------------------------------
+  GLOBAL SPEED DRIFT (~1s over a 2-minute FMV, ~0.8% fast)
+    Also affects non-FMV gameplay (Nirgends flight combat), so
+    it is global, not CD or FMV specific.
+
+    NOT the PC-FX core. Measured directly: the core reports
+    358994.1 master cycles per frame against an ideal of
+    358995 (263 lines x 1365), an error of 3 parts per million,
+    which is 0.0004 seconds over two minutes. The master clock
+    is correct at 21477272.72 (true NTSC). The audio resampler
+    tolerance is 9e-7. The FMV advance divisor matches hardware
+    (both advance one frame per 6 fields).
+
+    Remaining candidates: Mednafen's generic frontend pacing
+    loop, which is shared by all cores and outside PC-FX code;
+    or error in the original stopwatch measurement.
+
+    Core timing work will NOT fix this.
+
+  BLOCK-BOUNDARY OVER-READ (found, measured, NOT shipped)
+    bits_bytes_left counts physical bytes, but FetchWidgywabbit
+    decrements by one while consuming two on a stuffed 0xFF
+    pair, so the budget is inflated and the decoder can read
+    past the block end into the next block. Measured: 142 of
+    764 strips (18.6%) over-read, by up to 15 bytes. Charging
+    the stuffed byte takes it to zero.
+
+    Output is byte-identical everywhere testable, because a
+    strip that decodes cleanly finishes before reaching the
+    extra bytes. It would only bite under starvation, which is
+    the confetti path. Dropped as not worth shipping.
+
+================================================================
+BUILD ENVIRONMENT
+----------------------------------------------------------------
+  G2   Ubuntu miniPC. Local build and test environment.
+       configure/make run here, produces the Linux binary.
+       cfg at ~/.mednafen/mednafen.cfg
+  G6   Windows 11 miniPC. Runs the Windows build only; no local
+       builds. Windows binaries come from GitHub Actions CI.
+       cfg lives in the Windows base directory of the build
+       folder, not ~/.mednafen
+
+  Two-tree local layout: ~/pcfx/linux and ~/pcfx/windows, kept
+  separate so a Windows make distclean never disturbs the Linux
+  build. Two Linux binaries kept, one with logging, one without.
+
+  Source lives in a private repo, so it cannot serve as the GPL
+  source link for any distributed bundle — source ships in the
+  zip or on archive.org instead.
+
+================================================================
+                                               -- Paul Daniel
+================================================================

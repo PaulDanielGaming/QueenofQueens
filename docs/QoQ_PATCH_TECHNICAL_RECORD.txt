@@ -1,0 +1,216 @@
+================================================================
+NEC PC-FX : AJW Queen of Queens
+          : English patch — technical record
+          : Paul Daniel
+================================================================
+
+  Companion to MEDNAFEN_QoQ_CHANGE_LOG.txt, which covers the
+  emulator fixes. This file covers the game itself: where things
+  live on disc, how they were found, and what bit back.
+
+  Patch v2 FINAL released 15 August 2026.
+  Disc A md5 08029a9208ccc0c5138b779709803f5d  515,680,256 bytes
+  Disc B md5 8cb086a22af5b5095897a492c291ec75  663,777,280 bytes
+
+================================================================
+DISC AND DISPLAY BASICS
+----------------------------------------------------------------
+  The disc uses a custom PC-FX "Hu-CD" filesystem, magic
+  PC-FX:Hu_CD-ROM at sector 0. It is NOT ISO9660 — sector 16 is
+  0xFF-filled, so pycdlib and isoinfo reject the image outright.
+
+  Game resolution is 256x240, displayed 4:3, so pixels are not
+  square.
+
+  Audio is CD-DA on separate tracks, not ADPCM in the video
+  streams. Burn from the CUE, never the ISO alone, or the game
+  plays in silence.
+
+================================================================
+TEXT — THE THREE-COPY STRUCTURE
+----------------------------------------------------------------
+  Most Shift-JIS text is stored in THREE separate places on each
+  disc. Every string has to be entered into all three by hand.
+  This is the single biggest source of error in the patch.
+
+  Copy offsets, relative to the first:
+      copy 1   base
+      copy 2   +0x3A000
+      copy 3   +0x153800
+
+  QA METHOD that follows from this: compare each string against
+  its own three copies. A mismatch between copies is objectively
+  a paste error and needs no reference to intent. This is how
+  the final defects were found.
+
+  CAVEAT: the check only compares slots where all three copies
+  are readable ASCII, so Disc A's still-Japanese copy-3 slots
+  are skipped silently.
+
+  Defects caught in the final pass:
+      BACKIP, INITILAIZING, INITILIZATION, DON'T'/ANALYIZE,
+      NOT PAIRED -> HANDS OFF, PUNCH MOVES -> STRIKE DEFLECT,
+      and a badly mangled backup-memory message where every
+      letter carried a stray backslash, in all three Disc B
+      copies.
+
+  Left alone deliberately: 14 padding-only differences on Disc B
+  (move names centred differently between copies, same words),
+  and CANT BE SAVED, where Disc A has no matching wording to
+  standardise against.
+
+================================================================
+WRESTLER-SELECT NAME FONT
+----------------------------------------------------------------
+  LOCATION   Disc A ISO 0xE5A3C
+  FORMAT     1bpp, 8 bytes per 8x8 tile, UNCOMPRESSED
+  TO EDIT    YY-CHR, codec "1BPP 8x8", offset 0E5A3C
+             (plain hex, no 0x prefix)
+
+  The game expands this to a bold outlined 4bpp font at runtime,
+  which is the only reason a 4bpp-planar search never matched
+  it. Characters are 16x16 = four tiles, two across and two
+  down, 32 bytes each, eight characters per 256-byte row.
+  English can be drawn half-width at 8x16. The block spans
+  about 0x6D80 bytes.
+
+  Names are stored as TILE INDEX data, not character codes, so
+  a hex editor searching for Shift-JIS can never reach them.
+
+  THE TRAP: the glyph pool is DEDUPLICATED AND SHARED. There
+  are 95 non-blank characters and zero repeats. Each character
+  is stored once and reused across every name containing it —
+  the same 田 serves 堀田, 山田, 豊田, 三田 and 下田.
+  Overwriting one shared glyph changes every name that uses it.
+  Names have 13 cells each.
+
+  HOW IT WAS FOUND
+    Blind menu navigation fails; the game sits in a black
+    wait-state. So: a headless instrumented Mednafen with an
+    MDFNI_LoadState hook to jump straight to the screen, a
+    VDC-write hook to locate the blitter at V810 0x19DB6, then
+    a RAM-write hook to find the font builder at 0x186BE and
+    its expander at 0x2A804 — which reads a compact glyph
+    source at RAM 0xB2A3C, matching the disc at ISO 0xE5A3C.
+
+================================================================
+RESULTS-SCREEN KANJI
+----------------------------------------------------------------
+  The post-match list reads  対 NAME 戦.
+
+  These two characters defeated every search for months, and
+  the reason is worth recording.
+
+  They are NOT on the disc as text. The glyphs come from the
+  PC-FX BIOS font, not from game data. Proven by experiment:
+  zeroing BIOS 0x90000-0xD0000 makes 対, 戦, the block glyphs
+  and the full-width digits all disappear, while every English
+  string still renders normally. The glyph itself sits at BIOS
+  ROM 0xA9500-0xA9580.
+
+  The game assembles the line in RAM at 0x2330 as
+      91 CE 20 "INOUE K   " 90 ED 0D
+  passes r6 = 0x91CE to a BIOS font call at 0xFFF01538, and the
+  blitter at RAM 0x19DB6 copies the result into VDC1 VRAM.
+
+  WHY NO SEARCH EVER FOUND IT: the code loads the two bytes as
+  SEPARATE 8-bit immediates —
+
+      MOVEA  0x0091
+      ST.B
+      MOVEA  0x00CE
+
+  so the pair 91 CE never appears anywhere on the disc. Not as
+  a string (all 1,997 terminated strings were scanned; the only
+  genuine hits are 対戦成績表 and 対戦モード in menu labels),
+  and not as a 16-bit operand.
+
+  Program code maps to disc at RAM + 0x14C800, and there is
+  only ONE copy on disc rather than the usual three.
+
+  THE FOUR EDITABLE BYTES, same offsets on both discs:
+
+      0x17AA98    対 high byte
+      0x17AAA4    対 low byte
+      0x17AB2E    戦 high byte
+      0x17AB40    戦 low byte
+
+  Set all four to 81 40 81 40 for a full-width space. Any other
+  full-width Shift-JIS character works the same way.
+
+================================================================
+OTHER ASSET LOCATIONS
+----------------------------------------------------------------
+  Moniker bands        ISO 1DD0A4
+                       reference fonts copied from Disc B
+                       108850, edited in YY-CHR as
+                       4BPP PCE(SG), palette 27
+
+  Menu labels          対戦成績表 at 0x151998
+                       対戦モード at 0x1519A6
+
+================================================================
+ROSTER
+----------------------------------------------------------------
+  Disc A — 10 AJW wrestlers, in the order stored at 0xE5A3C:
+
+      北斗晶          Akira Hokuto
+      アジャ・コング   Aja Kong
+      堀田祐美子      Yumiko Hotta
+      山田敏代        Toshiyo Yamada
+      豊田真奈美      Manami Toyota
+      井上京子        Kyoko Inoue
+      井上貴子        Takako Inoue
+      三田英津子      Etsuko Mita
+      下田美馬        Mima Shimoda
+      長谷川咲恵      Sakie Hasegawa
+
+  Disc B — 20: the same ten, plus ten fictional KWP characters
+  (KWP is the invading promotion in Disc B's scenario mode):
+
+      ハーディン          HARDIN
+      ユミカ              YUMIKA
+      パトーラ            PATORA
+      ジュリ・アラキ       JURI ARAKI
+      マドモアゼル・セイコ  M SEIKO
+      紫怨                SION
+      ジェーン・本田       J HONDA
+      セーラ・月神         S TSUKIGAMI
+      妖鬼妃              YOKIHI
+      斧野魔知子           M ONONO
+
+  Abbreviations were driven by cell budget, not preference.
+
+================================================================
+TRANSLATION NOTES
+----------------------------------------------------------------
+  Move names follow established professional wrestling usage
+  rather than literal translation. 喧嘩キック is KENKA KICK,
+  not "rough kick" — that is the move's actual name.
+
+  Wrestler names appear in whichever order fits the space, so
+  both Japanese and Western ordering occur depending on screen.
+
+  Certain Japanese text was retained deliberately, to preserve
+  the look of the original game.
+
+================================================================
+WHAT COST THE MOST TIME
+----------------------------------------------------------------
+  Three problems each looked impossible for the same underlying
+  reason: the thing being searched for was not stored in the
+  form it appeared on screen.
+
+    - wrestler names are tile indices, not text
+    - the select font is 1bpp expanded to 4bpp at runtime, so
+      it never matched a 4bpp search
+    - the results kanji are two separate byte immediates in
+      code, so the character never exists as a pair
+
+  In every case the answer came from watching the game run and
+  tracing backwards from what appeared on screen, not from
+  searching the disc harder.
+
+================================================================
+                                               -- Paul Daniel
+================================================================

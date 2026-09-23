@@ -1,0 +1,174 @@
+================================================================
+Mednafen PC-FX : RAINBOW decoder discards trailing quantizer
+                 rescale opcodes
+                 Findings and fix - Paul Daniel
+================================================================
+
+SUMMARY
+----------------------------------------------------------------
+  Mednafen's RAINBOW strip decoder stops reading a strip's
+  bitstream the moment it has produced 16 macroblock columns.
+  The encoder, however, emits quantizer RESCALE opcodes AFTER
+  the last column, to set up the quantizer for the NEXT strip.
+  Those opcodes are never consumed, so the following strip
+  decodes with a stale quantizer.
+
+  Visible effect in AJW Queen of Queens: flat dark blocks that
+  should clamp to black instead land one quantizer step short
+  and render as grey rectangles. More generally it lifts black
+  level and leaves colour speckle in dark scenes across FMV.
+
+  This is a decode bug, not bad stream data. The opcodes are
+  present and well formed; Mednafen simply never reads them.
+
+WHERE
+----------------------------------------------------------------
+  pcfx/rainbow.cpp, in the strip decoder:
+
+      for(int column = 0; column < 16; column++)
+      { ... }
+
+  The loop exits on column == 16. Anything remaining in the
+  block's bitstream after that point is discarded.
+
+EVIDENCE
+----------------------------------------------------------------
+  Probing the bits left unread after the loop, on frame 99 of
+  the Disc B scenario FMV (stream at LBA 3884), gives:
+
+      strip  6  q0=3 : DC(0) padding only
+      strip  7  q0=3 : DC(0) padding only
+      strip  8  q0=2 : RESCALE(q0->3) then padding
+      strip  9  q0=2 : RESCALE(q0->3) then padding
+      strip 10  q0=3 : RESCALE(q0->2) RESCALE(q0->3)
+      strip 11  q0=3 : RESCALE(q0->2) RESCALE(q0->3)
+
+  In every case the net intent is the same: hand q0 = 3 to the
+  next strip. Strips already at 3 carry no rescale; strips
+  sitting at 2 carry one that restores 3. Mednafen discards it,
+  so strips 9 and 10 begin at q0 = 2 and their leading columns
+  decode one step too weak.
+
+  The affected blocks are DC-only, so the quantizer is doing
+  essentially all the work: dc = -85 with q0 = 3 clamps to
+  black, while the same dc with q0 = 2 lands at luma 43.
+
+INDEPENDENT CONFIRMATION FROM HARDWARE
+----------------------------------------------------------------
+  Using a real PC-FX capture of the same sequence, the required
+  quantizer can be solved directly, since output luma is
+  q * dc / 2 + 128:
+
+      q_required = 2 * (hw_luma - 128) / dc
+
+  Results per strip:
+
+      strips 4-5    q_required 1.00   emulator 1   agree
+      strips 6-8    q_required 3.01   emulator 3   agree
+      strips 9-10   q_required 3.00   emulator 2   DISAGREE
+      strip 11      q_required 2.98   emulator 3   agree
+
+  So hardware independently demands exactly the value that the
+  discarded opcodes would have set.
+
+FIX
+----------------------------------------------------------------
+  After the 16-column loop, and before the chroma interpolation
+  block, drain any trailing rescale opcodes. Stop at the first
+  non-rescale code, which is the zero padding that fills out the
+  block.
+
+      while(bits_bytes_left > 0)
+      {
+       uint32 rawbits = GetBits(9, MDFNBITS_PEEK);
+       uint32 code = dc_y_qlut[rawbits].val;
+
+       if(code < 0x10)
+        break;
+
+       SkipBits(dc_y_qlut[rawbits].bitc);
+       code -= 0x10;
+
+       for(int i = 0; i < 64; i++)
+       {
+        uint32 coeff = (QuantTablesBase[0][i] * code) >> 2;
+        if(coeff < 1) coeff = 1; else if(coeff > 0xFE) coeff = 0xFE;
+        QuantTables[0][i] = coeff;
+
+        if(i)
+         coeff = (QuantTablesBase[1][i] * code) >> 2;
+        else
+         coeff = (QuantTablesBase[1][i]) >> 2;
+
+        if(coeff < 1) coeff = 1; else if(coeff > 0xFE) coeff = 0xFE;
+        QuantTables[1][i] = coeff;
+       }
+      }
+
+  The rescale body is identical to the one already in
+  get_dc_coeff.
+
+VALIDATION
+----------------------------------------------------------------
+  Measured against the unmodified build:
+
+      FMV grey blocks                    95  ->  1
+      FMV mean luma                    19.1  ->  18.2
+      BIOS boot logo, cold boot          pixel-identical
+      Key Tips portrait screen           pixel-identical
+      Wrestler select, results screen    pixel-identical
+
+  Against a real hardware capture, over 45 frame pairs matched
+  at better than 0.97 correlation:
+
+      mean luma error                  6.60  ->  4.56
+      artifact region                 38.42  ->  4.52
+      rest of frame                    5.88  ->  4.51
+
+  Note the last line: the whole frame moves closer to hardware,
+  not just the region with the visible artifact.
+
+SCOPE
+----------------------------------------------------------------
+  Counting how often the new code actually executes:
+
+      Disc A cold boot, BIOS + attract        0
+      Disc A wrestler select                  0
+      Disc A results screen                   0
+      Disc B cold boot, title and menus       0
+      Disc B Key Tips clip, 700 frames        0
+      Disc B scenario FMV                   590
+
+  It is inert on every non-FMV screen tested, which is why
+  those paths come back pixel-identical. Earlier attempts that
+  touched the quantizer on null runs destroyed RAINBOW-decoded
+  stills, since stills are full of null runs. This one does not.
+
+  Confirmed in play on real hardware-equivalent testing: the
+  grey rectangles are gone, portraits are intact, the existing
+  confetti compensation still behaves, and the Disc A intro
+  shows noticeably less colour speckle in black areas.
+
+SECOND, SEPARATE FINDING (not fixed here)
+----------------------------------------------------------------
+  Mednafen also over-reads block boundaries. bits_bytes_left is
+  initialised to the block's declared size, which counts
+  physical bytes, but FetchWidgywabbit decrements it by one
+  while consuming TWO physical bytes on a stuffed 0xFF pair.
+  The budget is therefore inflated by the stuffed-byte count.
+
+  Measured on the Disc B scenario FMV: 142 of 764 strips
+  (18.6%) read past the declared size, by up to 15 bytes,
+  taking those bytes from the following block. Adding a second
+  bits_bytes_left-- inside the 0xFF branch takes it to 0 of 764.
+
+  Output is byte-identical on every scene tested, because a
+  strip that decodes cleanly finishes before reaching the extra
+  bytes. It should only matter under starvation, where the
+  over-read bytes come from a neighbouring block and get
+  decoded as picture. Offered as an observation rather than a
+  proven fix.
+
+================================================================
+                                               -- Paul Daniel
+================================================================
