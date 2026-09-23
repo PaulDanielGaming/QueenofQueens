@@ -464,9 +464,8 @@ BUILD ENVIRONMENT
   separate so a Windows make distclean never disturbs the Linux
   build. Two Linux binaries kept, one with logging, one without.
 
-  Source lives in a private repo, so it cannot serve as the GPL
-  source link for any distributed bundle — source ships in the
-  zip or on archive.org instead.
+  Source is public at github.com/PaulDanielGaming/QueenofQueens,
+  which serves as the GPL source link for any distributed bundle.
 
 ================================================================
                                                -- Paul Daniel
