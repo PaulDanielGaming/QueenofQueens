@@ -3183,8 +3183,6 @@ static void MDFN_FASTCALL KING_RunGfx(int32 clocks)
 			break;
 
     case HPHASE_HBLANK_PART3:
-			{ static int lastlpf=-1; int lpf=(fx_vce.picture_mode & 0x1) ? 262 : 263;
-			  if(lpf!=lastlpf){ lastlpf=lpf; fprintf(stderr,"LPF lines_per_frame=%d picture_mode=%04X\n",lpf,(unsigned)fx_vce.picture_mode); fflush(stderr); } }
 			fx_vce.raster_counter = (fx_vce.raster_counter + 1) % ((fx_vce.picture_mode & 0x1) ? 262 : 263); //lines_per_frame;
 			DebugHSyncFlag = true;
 
