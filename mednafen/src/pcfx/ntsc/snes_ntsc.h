@@ -144,16 +144,22 @@ statement in a block (unless you're using C++). */
 
 /* private */
 enum { snes_ntsc_entry_size = 128 };
-enum { snes_ntsc_palette_size = 0x2000 };
-typedef unsigned long snes_ntsc_rgb_t;
+/* PC-FX (Paul Daniel): widened from 0x2000 (R:4 G:5 B:4) to the full
+   RGB565 space so red and blue carry 32 levels and green 64 instead of
+   16/32/16. The coarse table was the source of visible colour banding on
+   smooth gradients. Costs 8x the table memory. */
+enum { snes_ntsc_palette_size = 0x10000 };
+typedef unsigned int snes_ntsc_rgb_t;
 struct snes_ntsc_t {
 	snes_ntsc_rgb_t table [snes_ntsc_palette_size] [snes_ntsc_entry_size];
 };
 enum { snes_ntsc_burst_size = snes_ntsc_entry_size / snes_ntsc_burst_count };
 
+/* PC-FX (Paul Daniel): the table now spans the whole RGB565 space, so the
+   pixel is its own index and no bits are discarded. */
 #define SNES_NTSC_RGB16( ktable, n ) \
-	(snes_ntsc_rgb_t const*) (ktable + ((n & 0x001E) | (n >> 1 & 0x03E0) | (n >> 2 & 0x3C00)) * \
-			(snes_ntsc_entry_size / 2 * sizeof (snes_ntsc_rgb_t)))
+	(snes_ntsc_rgb_t const*) (ktable + ((n) & 0xFFFF) * \
+			(snes_ntsc_entry_size * sizeof (snes_ntsc_rgb_t)))
 
 #define SNES_NTSC_RGB15( ktable, n ) \
     (snes_ntsc_rgb_t const*) (ktable + ((n & 0x001E) | (n >> 0 & 0x03E0) | (n >> 1 & 0x3C00)) * \

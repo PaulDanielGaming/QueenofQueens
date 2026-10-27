@@ -28,7 +28,7 @@ snes_ntsc_setup_t const snes_ntsc_rgb        = { 0, 0, 0, 0,.2,  0,.7, -1, -1,-1
 #define std_decoder_hue 0
 
 #define rgb_bits        7 /* half normal range to allow for doubled hires pixels */
-#define gamma_size      32
+#define gamma_size      64
 
 #include "snes_ntsc_impl.h"
 
@@ -96,9 +96,12 @@ void snes_ntsc_init( snes_ntsc_t* ntsc, snes_ntsc_setup_t const* setup )
 		/* Reduce number of significant bits of source color. Clearing the
 		low bits of R and B were least notictable. Modifying green was too
 		noticeable. */
-		int ir = entry >> 8 & 0x1E;
-		int ig = entry >> 4 & 0x1F;
-		int ib = entry << 1 & 0x1E;
+		/* PC-FX (Paul Daniel): entry is now a full RGB565 value.
+		   Red and blue are 5-bit and green 6-bit; the gamma table has 64
+		   entries, so the 5-bit channels are doubled to span it. */
+		int ir = entry >> 10 & 0x3E;
+		int ig = entry >>  5 & 0x3F;
+		int ib = entry <<  1 & 0x3E;
 		
 		#if SNES_NTSC_BSNES_COLORTBL
 			if ( setup->bsnes_colortbl )

@@ -1176,6 +1176,8 @@ static const MDFNSetting PCFXSettings[] =
   { "pcfx.ntsc.contrast", MDFNSF_NOFLAGS, gettext_noop("NTSC contrast offset."), nullptr, MDFNST_FLOAT, "0.0", "-1.0", "1.0" },
   { "pcfx.ntsc.bleed", MDFNSF_NOFLAGS, gettext_noop("NTSC colour bleed."), nullptr, MDFNST_FLOAT, "0.0", "-2.0", "2.0" },
   { "pcfx.ntsc.fringing", MDFNSF_NOFLAGS, gettext_noop("NTSC colour fringing on brightness changes."), nullptr, MDFNST_FLOAT, "0.0", "-2.0", "2.0" },
+  { "pcfx.ntsc.edge_lo", MDFNSF_NOFLAGS, gettext_noop("NTSC edge gate, lower threshold."), gettext_noop("Local contrast below this gets no edge reconstruction, so the console's own gradient steps are not sharpened into visible bands. Set both thresholds to 0 to filter everything, as before."), MDFNST_UINT, "14", "0", "255" },
+  { "pcfx.ntsc.edge_hi", MDFNSF_NOFLAGS, gettext_noop("NTSC edge gate, upper threshold."), gettext_noop("Local contrast at or above this gets the filter in full. Between the two thresholds it fades in."), MDFNST_UINT, "44", "0", "255" },
   { "pcfx.cdspeed", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Emulated CD-ROM speed."), gettext_noop("Setting the value higher than 2, the default, will decrease loading times in most games by some degree."), MDFNST_UINT, "2", "2", "10" },
 
   { "pcfx.nospritelimit", MDFNSF_NOFLAGS, gettext_noop("Remove 16-sprites-per-scanline hardware limit."), NULL, MDFNST_BOOL, "0" },

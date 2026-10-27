@@ -41,9 +41,16 @@
 #include "king.h"
 
 // ---- NTSC composite/S-Video signal simulation (Paul Daniel) ----
-// blargg's snes_ntsc, LGPL. Recreates the analog bandwidth limiting and chroma
-// bleed that a CRT performs, which is what fills in hard luma edges instead of
-// merely blurring them. See pcfx.ntsc* settings.
+// Built on snes_ntsc by Shay Green (blargg), Copyright (C) 2006-2007 Shay
+// Green, licensed LGPL. The library is vendored in ntsc/; its own licence
+// notices are in snes_ntsc.inc and snes_ntsc_impl.h. Local changes to it are
+// confined to snes_ntsc_config.h, and to snes_ntsc.h and snes_ntsc.inc, where
+// the colour table is widened from 0x2000 to 0x10000 entries so the index no
+// longer discards the low bit of each channel. snes_ntsc_impl.h is unmodified.
+//
+// It recreates the analog bandwidth limiting and chroma bleed that a CRT
+// performs, which is what fills in hard luma edges instead of merely blurring
+// them. See pcfx.ntsc* settings.
 #include "ntsc/snes_ntsc.h"
 // Compiled straight into this translation unit so no build-system change is
 // needed - the CI workflow runs configure+make without autoreconf, so an
@@ -71,6 +78,32 @@ static void PCFX_RebuildGammaLUT(double gamma)
 
 static snes_ntsc_t* PCFX_NTSC = NULL;
 static int PCFX_NTSC_BurstPhase = 0;
+// Low-frequency response of the filter as a 3x3 matrix, 8.8 fixed point.
+// A per-channel scalar is not enough: the filter works in YIQ, so a change
+// in one input channel moves all three output channels, and the chroma gain
+// differs from the luma gain. Measured at init by perturbing each channel of
+// a flat field in turn, so it tracks whichever preset and tuning offsets are
+// in use.
+// Impulse response of the filter: how one input pixel's contribution is
+// spread across the output. Measured at init, per alignment phase, because
+// 256 input pixels map to 602 output pixels and the weighting differs by
+// phase. Used to distribute the quantiser residual the same way the filter
+// distributes the signal, instead of a plain linear interpolation.
+enum { PCFX_NTSC_IR_TAPS = 16, PCFX_NTSC_IR_MID = 6 };
+static int PCFX_NTSC_IR[3][PCFX_NTSC_IR_TAPS];
+// Edge gate thresholds, pcfx.ntsc.edge_lo / edge_hi.
+static int PCFX_NTSC_EdgeLo = 14, PCFX_NTSC_EdgeHi = 44;
+// Constant term of the filter's tone curve, 8.8 fixed point. With the
+// response matrix above this maps an unfiltered pixel onto the same tone
+// curve the filter produces, so the edge gate can blend between the two
+// without introducing a brightness step where it opens and closes.
+static int PCFX_NTSC_Off[3] = { 0, 0, 0 };
+static int PCFX_NTSC_Resp[3][3] =
+{
+ { 256, 0, 0 },
+ { 0, 256, 0 },
+ { 0, 0, 256 }
+};
 enum { PCFX_NTSC_IN_W = 256 };
 enum { PCFX_NTSC_OUT_W = SNES_NTSC_OUT_WIDTH(PCFX_NTSC_IN_W) };   // 256 -> 602
 
@@ -1818,6 +1851,10 @@ void KING_Init(void)
 
   if(mode != "off")
   {
+   PCFX_NTSC_EdgeLo = MDFN_GetSettingUI("pcfx.ntsc.edge_lo");
+   PCFX_NTSC_EdgeHi = MDFN_GetSettingUI("pcfx.ntsc.edge_hi");
+   if(PCFX_NTSC_EdgeHi <= PCFX_NTSC_EdgeLo) PCFX_NTSC_EdgeHi = PCFX_NTSC_EdgeLo + 1;
+
    snes_ntsc_setup_t setup;
 
    if(mode == "composite")       setup = snes_ntsc_composite;
@@ -1842,7 +1879,96 @@ void KING_Init(void)
 
    PCFX_NTSC = (snes_ntsc_t*)malloc(sizeof(snes_ntsc_t));
    if(PCFX_NTSC)
+   {
     snes_ntsc_init(PCFX_NTSC, &setup);
+
+    // Calibrate the filter's low-frequency response. A flat field goes in,
+    // one channel at a time is raised, and the resulting movement of all
+    // three output channels is recorded. That 3x3 matrix is what the
+    // residual correction has to be pushed through.
+    {
+     const int base = 96, delta = 32;
+     int flat[4][3];
+
+     for(int probe = 0; probe < 4; probe++)
+     {
+      uint16 tin[PCFX_NTSC_IN_W];
+      uint32 tout[PCFX_NTSC_OUT_W];
+      int v[3] = { base, base, base };
+      if(probe) v[probe - 1] += delta;
+
+      const uint32 qr = (uint32)v[0] & 0xF8, qg = (uint32)v[1] & 0xFC, qb = (uint32)v[2] & 0xF8;
+      const uint16 pix = (uint16)((qr << 8) | (qg << 3) | (qb >> 3));
+      for(int x = 0; x < PCFX_NTSC_IN_W; x++) tin[x] = pix;
+
+      snes_ntsc_blit(PCFX_NTSC, tin, PCFX_NTSC_IN_W, 0, PCFX_NTSC_IN_W, 1,
+                     tout, PCFX_NTSC_OUT_W * sizeof(uint32));
+
+      for(int c = 0; c < 3; c++)
+      {
+       int acc = 0;
+       for(int x = 64; x < PCFX_NTSC_OUT_W - 64; x++)
+        acc += (int)((tout[x] >> (16 - c * 8)) & 0xFF);
+       flat[probe][c] = (acc * 256) / (PCFX_NTSC_OUT_W - 128);
+      }
+     }
+
+     for(int in_c = 0; in_c < 3; in_c++)
+     {
+      for(int out_c = 0; out_c < 3; out_c++)
+      {
+       int m = (flat[in_c + 1][out_c] - flat[0][out_c]) / delta;
+       if(m < -512) m = -512; else if(m > 1024) m = 1024;
+       PCFX_NTSC_Resp[out_c][in_c] = m;
+      }
+     }
+
+     // Constant term: what the filter outputs for a flat field at `base`,
+     // minus what the response matrix alone predicts for it.
+     for(int c = 0; c < 3; c++)
+     {
+      int pred = 0;
+      for(int k = 0; k < 3; k++) pred += PCFX_NTSC_Resp[c][k] * base;
+      PCFX_NTSC_Off[c] = flat[0][c] - pred;
+     }
+
+     // Impulse response: raise one input pixel on a flat field and record how
+     // the change lands across the output.
+     {
+      for(int phase = 0; phase < 3; phase++)
+      {
+       uint16 tin[PCFX_NTSC_IN_W];
+       uint32 ta[PCFX_NTSC_OUT_W], tb[PCFX_NTSC_OUT_W];
+       const uint32 qb_ = (uint32)base & 0xF8;
+       const uint16 flatpix = (uint16)((qb_ << 8) | (((uint32)base & 0xFC) << 3) | (qb_ >> 3));
+       const int ip = (PCFX_NTSC_IN_W / 2) + phase;
+
+       for(int x = 0; x < PCFX_NTSC_IN_W; x++) tin[x] = flatpix;
+       snes_ntsc_blit(PCFX_NTSC, tin, PCFX_NTSC_IN_W, 0, PCFX_NTSC_IN_W, 1,
+                      ta, PCFX_NTSC_OUT_W * sizeof(uint32));
+
+       const uint32 qh = ((uint32)(base + 64) > 255 ? 255u : (uint32)(base + 64)) & 0xF8;
+       tin[ip] = (uint16)((qh << 8) | ((((uint32)base + 64) & 0xFC) << 3) | (qh >> 3));
+       snes_ntsc_blit(PCFX_NTSC, tin, PCFX_NTSC_IN_W, 0, PCFX_NTSC_IN_W, 1,
+                      tb, PCFX_NTSC_OUT_W * sizeof(uint32));
+
+       const int oc = (int)((long)ip * (PCFX_NTSC_OUT_W - 1) / (PCFX_NTSC_IN_W - 1));
+       int sum = 0, w[PCFX_NTSC_IR_TAPS];
+       for(int t = 0; t < PCFX_NTSC_IR_TAPS; t++)
+       {
+        const int ox = oc - PCFX_NTSC_IR_MID + t;
+        int dv = 0;
+        if(ox >= 0 && ox < PCFX_NTSC_OUT_W)
+         dv = (int)((tb[ox] >> 8) & 0xFF) - (int)((ta[ox] >> 8) & 0xFF);
+        if(dv < 0) dv = 0;
+        w[t] = dv; sum += dv;
+       }
+       for(int t = 0; t < PCFX_NTSC_IR_TAPS; t++)
+        PCFX_NTSC_IR[phase][t] = sum ? (w[t] * 256) / sum : (t == PCFX_NTSC_IR_MID ? 256 : 0);
+      }
+     }
+    }
+   }
   }
  }
  try
@@ -3068,22 +3194,118 @@ static void MixLayers(void)
      uint16 nin[PCFX_NTSC_IN_W];
      uint32 nout[PCFX_NTSC_OUT_W];
 
+     // The filter's colour table has been widened to the full RGB565 space
+     // (see ntsc/snes_ntsc.h), so the lookup discards nothing. The only
+     // quantiser left is this RGB888 -> RGB565 conversion: 32 levels of red
+     // and blue, 64 of green.
+     //
+     // Rather than dither that error away - which only trades bands for
+     // grain, and the grain is coarse because 256 input pixels become 602 -
+     // the error is measured here and added back after filtering. The
+     // filter passes low frequencies at unit gain, so re-injecting the
+     // residual cancels the quantiser almost exactly. Nothing random is
+     // introduced, so there is no grain at all.
+     int16 resid[PCFX_NTSC_IN_W][3];
+     uint32 nsrc[PCFX_NTSC_IN_W];
+
      for(int x = 0; x < PCFX_NTSC_IN_W; x++)
      {
       const uint32 p = target[x];
-      // Round rather than truncate. A bare mask biases every channel down by
-      // half a step, which measurably darkens the whole picture.
+      nsrc[x] = p;
       uint32 pr = (p >> 16) & 0xFF, pg = (p >> 8) & 0xFF, pb = p & 0xFF;
-      pr = (pr + 4 > 255) ? 255 : pr + 4;
-      pg = (pg + 2 > 255) ? 255 : pg + 2;
-      pb = (pb + 4 > 255) ? 255 : pb + 4;
-      nin[x] = ((pr & 0xF8) << 8) | ((pg & 0xFC) << 3) | (pb >> 3);
+
+      // Round to nearest representable level.
+      uint32 qr = (pr + 4 > 255) ? 255 : pr + 4;
+      uint32 qg = (pg + 2 > 255) ? 255 : pg + 2;
+      uint32 qb = (pb + 4 > 255) ? 255 : pb + 4;
+      qr &= 0xF8; qg &= 0xFC; qb &= 0xF8;
+      nin[x] = (qr << 8) | (qg << 3) | (qb >> 3);
+
+      // What that level actually represents, expanded back to 8 bits.
+      const int dr = (int)(qr | (qr >> 5));
+      const int dg = (int)(qg | (qg >> 6));
+      const int db = (int)(qb | (qb >> 5));
+
+      resid[x][0] = (int16)((int)pr - dr);
+      resid[x][1] = (int16)((int)pg - dg);
+      resid[x][2] = (int16)((int)pb - db);
      }
 
      snes_ntsc_blit(PCFX_NTSC, nin, PCFX_NTSC_IN_W, PCFX_NTSC_BurstPhase,
                     PCFX_NTSC_IN_W, 1, nout, PCFX_NTSC_OUT_W * sizeof(uint32));
 
-     memcpy(target, nout, PCFX_NTSC_OUT_W * sizeof(uint32));
+     // Add the residual back, resampled to the filter's output width.
+     for(int ox = 0; ox < PCFX_NTSC_OUT_W; ox++)
+     {
+      const uint32 fp = (uint32)ox * (PCFX_NTSC_IN_W - 1) * 256 / (PCFX_NTSC_OUT_W - 1);
+      const uint32 i0 = fp >> 8, fr = fp & 0xFF;
+      const uint32 i1 = (i0 + 1 < (uint32)PCFX_NTSC_IN_W) ? i0 + 1 : i0;
+      const uint32 q = nout[ox];
+      uint32 o = 0;
+      // Edge-gated blend. The filter's job is edge reconstruction, but it
+      // applies that to every transition, including the small steps in the
+      // PC-FX's own gradients - which is what turns a smooth background into
+      // visible vertical stripes. Local contrast decides how much of the
+      // filtered line is used: a real edge gets it in full, a gradient step
+      // gets the plain resampled source instead.
+      int gate;
+      {
+       int lo = 255, hi = 0;
+       for(int k = -2; k <= 2; k++)
+       {
+        int si = (int)i0 + k;
+        if(si < 0) si = 0; else if(si >= PCFX_NTSC_IN_W) si = PCFX_NTSC_IN_W - 1;
+        const uint32 sp = nsrc[si];
+        const int l = (int)((((sp >> 16) & 0xFF) * 77 + ((sp >> 8) & 0xFF) * 150 + (sp & 0xFF) * 29) >> 8);
+        if(l < lo) lo = l;
+        if(l > hi) hi = l;
+       }
+       const int contrast = hi - lo;
+       const int GLO = PCFX_NTSC_EdgeLo, GHI = PCFX_NTSC_EdgeHi;
+       gate = (contrast <= GLO) ? 0 : (contrast >= GHI) ? 256 : ((contrast - GLO) * 256) / (GHI - GLO);
+      }
+
+      // Gather the residual through the measured impulse response rather than
+      // interpolating it, so it is spread exactly as the filter spreads the
+      // signal it was taken from.
+      int rsum[3] = { 0, 0, 0 };
+      {
+       const int* const ir = PCFX_NTSC_IR[i0 % 3];
+       for(int t = 0; t < PCFX_NTSC_IR_TAPS; t++)
+       {
+        const int w = ir[t];
+        if(!w) continue;
+        int si = (int)i0 - PCFX_NTSC_IR_MID + t;
+        if(si < 0) si = 0; else if(si >= PCFX_NTSC_IN_W) si = PCFX_NTSC_IN_W - 1;
+        for(int k = 0; k < 3; k++) rsum[k] += resid[si][k] * w;
+       }
+       for(int k = 0; k < 3; k++) rsum[k] >>= 8;
+      }
+      for(int c = 0; c < 3; c++)
+      {
+       int e = 0;
+       for(int k = 0; k < 3; k++) e += rsum[k] * PCFX_NTSC_Resp[c][k];
+       e >>= 8;
+       int v = (int)((q >> (16 - c * 8)) & 0xFF) + e;
+       // Plain resampled source, for the low-contrast case.
+       const int sh2 = 16 - c * 8;
+       // The unfiltered source, mapped onto the filter's own tone curve so
+       // both sides of the gate blend match in brightness.
+       int flat = PCFX_NTSC_Off[c];
+       for(int k = 0; k < 3; k++)
+       {
+        const int ksh = 16 - k * 8;
+        const int ka = (int)((nsrc[i0] >> ksh) & 0xFF), kb = (int)((nsrc[i1] >> ksh) & 0xFF);
+        flat += PCFX_NTSC_Resp[c][k] * (ka + (((kb - ka) * (int)fr) >> 8));
+       }
+       flat >>= 8;
+       if(flat < 0) flat = 0; else if(flat > 255) flat = 255;
+       v = flat + (((v - flat) * gate) >> 8);
+       if(v < 0) v = 0; else if(v > 255) v = 255;
+       o |= (uint32)v << sh2;
+      }
+      target[ox] = o;
+     }
      DisplayRect->w = PCFX_NTSC_OUT_W;
     }
 
