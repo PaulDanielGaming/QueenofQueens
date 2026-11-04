@@ -54,11 +54,12 @@ v810_timestamp_t FXTIMER_Update(const v810_timestamp_t timestamp)
   while(counter <= 0)
   {
    counter += EFF_PERIOD;
+   // Measured on a real PC-FX (gameblabla, PCFXemu commit 5b28a36, DIAG9 K14, 2026-11-01): with the timer running
+   // and its interrupt disabled (control 0x02), control read back 0x06. The zero flag (D2) sets on every underflow
+   // whether or not D0 is set; only the interrupt line itself needs D0.
+   control |= 0x4;
    if(control & 0x1)
-   {
-    control |= 0x4;
     PCFXIRQ_Assert(PCFXIRQ_SOURCE_TIMER, true);
-   }
   }
  }
 
@@ -109,7 +110,8 @@ void FXTIMER_Write16(uint32 A, uint16 V, const v810_timestamp_t timestamp)
 	      if(V & 0x4)
 	       FXDBG("Timer control write with D2 set?");
 
-	      PCFXIRQ_Assert(PCFXIRQ_SOURCE_TIMER, (bool)(control & 0x4));
+	      // D2 can now be set with D0 clear (see FXTIMER_Update), so the line is asserted only when both are set.
+	      PCFXIRQ_Assert(PCFXIRQ_SOURCE_TIMER, (bool)((control & 0x4) && (control & 0x1)));
 	      PCFX_SetEvent(PCFX_EVENT_TIMER, CalcNextEventTS(timestamp));
 	      break;
 

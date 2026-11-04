@@ -77,6 +77,8 @@ uint16 KING_Read16(const v810_timestamp_t timestamp, uint32 A);
 
 void KING_Write8(const v810_timestamp_t timestamp, uint32 A, uint8 V);
 void KING_Write16(const v810_timestamp_t timestamp, uint32 A, uint16 V);
+void KING_SetKRAMWriteExtraClocks(uint32 clocks);
+uint32 KING_KRAMWriteExtraClocks(uint32 A);
 void KING_Init(void) MDFN_COLD;
 void KING_Close(void) MDFN_COLD;
 void KING_Reset(const v810_timestamp_t timestamp) MDFN_COLD;

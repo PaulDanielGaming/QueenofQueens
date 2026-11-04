@@ -209,6 +209,35 @@ static uint32 read_sec_end;
 static uint32 head_pos; // not added into savestates
 
 static int32 CDReadTimer;
+
+// QoQ private build: PC-FX drive read-ahead model, calibrated against a 60 fps capture of a real PC-FX playing an
+// original Queen of Queens disc (Disc A intro and Disc B scenario intro).  Settings are registered in pcfx.cpp and
+// read at each READ command.
+//  pcfx.cd_buffer_kb        drive buffer size (din FIFO, sized in SCSICD_Init).  Stock 64, calibrated 240.
+//  pcfx.cd_resume_level_kb  once the buffer has filled and reading stopped, reading restarts only when the host has
+//                           drained it to this level.  Stock 0 (restart as soon as one sector fits), calibrated 28.
+//  pcfx.cd_resume_ms        delay before data flows again after a restart (the disc has to come back round to the
+//                           next sector).  Stock 0, calibrated 280.
+//  pcfx.cd_sector_scale     multiplies the per-sector delivery time.  1.0 = nominal 2x rate (calibrated value).
+// With the stock values the game never runs short of data, so FMV plays faster than on hardware and never shows
+// the hardware's short catch-up pauses.  With the calibrated values the pauses appear at the hardware's positions.
+static float PCFXSectorScale = 1.0f;  // not added into savestates (setting)
+static float PCFXResumeMs = 0.0f;     // not added into savestates (setting)
+static uint32 PCFXResumeLevel = 0;    // not added into savestates (setting)
+static bool PCFXReadPaused = false;   // not added into savestates (transient)
+
+// QoQ private build: PC-FX drive reset and spin-down model, calibrated against the same capture (load gaps).
+//  pcfx.cd_reset_ms            after a SCSI bus reset the drive answers commands at once but delivers no data until
+//                              this long after the reset (drive re-initialisation).  Stock 0, calibrated 1920.
+//  pcfx.cd_spindown_s          drive idle time (no sector read) after which the spindle has slowed and the next READ
+//                              pays a spin-up delay.  Calibrated 10.5.
+//  pcfx.cd_spinup_ms_per_s     spin-up delay per second of idle beyond pcfx.cd_spindown_s.  Stock 0, calibrated 300.
+//  pcfx.cd_spinup_max_ms       upper limit of the spin-up delay.  Calibrated 3900 (the longest idle in the capture).
+static float PCFXSeekScaleBack = 0.0f;  // not added into savestates (setting)
+static float PCFXResetMs = 0.0f;        // not added into savestates (setting)
+static int64 PCFXLastResetTS = 0;       // not added into savestates (timing only)
+static int64 PCFXLastActivityTS = 0;    // not added into savestates (timing only)
+
 static int32 CDDASeekTimer; // not added into savestates
 static int32 CDAudioDelay;  // not added into savestates
 static uint32 SectorAddr;
@@ -278,6 +307,7 @@ static void VirtualReset(void)
  has_delayed_status = false;
 
  pce_lastsapsp_timestamp = monotonic_timestamp;
+ PCFXLastResetTS = monotonic_timestamp;	// QoQ private build
 
  PrevHeadAddress = PrevSectorCount = SectorAddr = SectorCount = SectorIndex = 0;
  read_sec_start = read_sec = 0;
@@ -312,6 +342,7 @@ void SCSICD_Power(scsicd_timestamp_t system_timestamp)
  memset(&cd_bus, 0, sizeof(scsicd_bus_t));
 
  monotonic_timestamp = system_timestamp;
+ PCFXLastActivityTS = monotonic_timestamp;	// QoQ private build
 
  cd.DiscChanged = false;
 
@@ -2063,24 +2094,51 @@ static void DoREADBase(uint32 sa, uint32 sc)
   CDReadTimer = ((uint64) 1 * 2048 * System_Clock) / CD_DATA_TRANSFER_RATE;
 
   // QoQ private build: PC-FX seek-latency model (stock leaves this unmodeled).
-  // Adds laser-head seek latency proportional to head travel, so a jump to a new
-  // clip's LBA earns a real gap (the hardware input window). Note: the model has a
-  // floor of roughly 200ms even for a same-spot read, so "sequential" reads are not
-  // truly zero-cost -- QoQ still plays smoothly because it reads each clip as one
-  // large command, so the delay lands once per clip boundary, not once per sector.
+  // Adds laser-head seek latency from the PC Engine seek curve (get_pce_cd_seek_ms), so a jump to a new
+  // clip's LBA earns a real gap (the hardware input window). The raw curve has a floor of about 200ms
+  // even for a same-spot read (about 70ms forward and 140ms backward after the calibrated scales), so
+  // "sequential" reads are not truly zero-cost -- QoQ still plays smoothly because it reads each clip as
+  // one large command, so the delay lands once per clip boundary, not once per sector.
   // Audio runs on a separate path and is unaffected.
-  // seek_scale is the calibration knob, now read from the pcfx.cd_seek_scale setting
-  // (registered in PCFXSettings in pcfx.cpp) so it can be tuned live from mednafen.cfg
-  // with no rebuild. 1.0 is the raw PCE seek curve (calibrated to the PC Engine's
+  // The scales are read from pcfx.cd_seek_scale (forward seeks, toward higher sectors) and
+  // pcfx.cd_seek_scale_back (backward seeks), registered in PCFXSettings in pcfx.cpp, so they can be tuned
+  // from mednafen.cfg with no rebuild. 1.0 is the raw PCE seek curve (calibrated to the PC Engine's
   // single-speed drive), which runs long against the PC-FX's faster double-speed drive.
-  // Tuning history: 1.0 too long, 0.7 closer but still long, 0.6 within a frame or two
-  // on a hardware side-by-side but a touch long, 0.5 the current default and beta 2
-  // value. All by eye, not frame-counted -- see the build notes for the two-point method
-  // if exact calibration is ever wanted. NOTE: 0.5 was calibrated on the ~1% fast base;
-  // recheck it after rebasing onto a timing-corrected base.
+  // Tuning history (one scale for both directions): 1.0 too long, 0.7 closer but still long, 0.6 within a
+  // frame or two on a hardware side-by-side but a touch long, 0.5 the beta 2 value. All by eye.
+  // 2026-11-03: frame-counted against a 60 fps capture of a real PC-FX (11 load gaps and clip changes on both
+  // discs). Forward and backward seeks take different times on hardware, so each has its own scale:
+  // forward calibrated 0.35, backward calibrated 0.69. The drive reset and spin-down delays below are fitted
+  // in the same least-squares fit.
   const float seek_scale = MDFN_GetSettingF("pcfx.cd_seek_scale");
-  seekms = get_pce_cd_seek_ms(head_pos, sa) * seek_scale;
+  PCFXSeekScaleBack = MDFN_GetSettingF("pcfx.cd_seek_scale_back");
+  seekms = get_pce_cd_seek_ms(head_pos, sa) * ((sa < head_pos) ? PCFXSeekScaleBack : seek_scale);
+
+  // Drive still re-initialising after a SCSI bus reset: no data until pcfx.cd_reset_ms after the reset.
+  PCFXResetMs = MDFN_GetSettingF("pcfx.cd_reset_ms");
+  {
+   const double since_reset_ms = (double)(monotonic_timestamp - PCFXLastResetTS) * 1000.0 / System_Clock;
+
+   if(since_reset_ms >= 0 && since_reset_ms < PCFXResetMs)
+    seekms += PCFXResetMs - since_reset_ms;
+  }
+
+  // Spindle slowed after a long idle: spin-up delay grows with the idle time beyond pcfx.cd_spindown_s.
+  {
+   const double idle_s = (double)(monotonic_timestamp - PCFXLastActivityTS) / System_Clock;
+   const double spindown_s = MDFN_GetSettingF("pcfx.cd_spindown_s");
+
+   if(idle_s > spindown_s)
+    seekms += std::min<double>((idle_s - spindown_s) * MDFN_GetSettingF("pcfx.cd_spinup_ms_per_s"), MDFN_GetSettingF("pcfx.cd_spinup_max_ms"));
+  }
+  PCFXLastActivityTS = monotonic_timestamp;
+
   CDReadTimer += ((uint64) System_Clock * seekms) / 1000;
+
+  PCFXSectorScale = MDFN_GetSettingF("pcfx.cd_sector_scale");
+  PCFXResumeMs = MDFN_GetSettingF("pcfx.cd_resume_ms");
+  PCFXResumeLevel = MDFN_GetSettingUI("pcfx.cd_resume_level_kb") * 1024;
+  PCFXReadPaused = false;
  }
 
  if(SCSILog)
@@ -2720,6 +2778,7 @@ static INLINE void RunCDDA(uint32 system_timestamp, int32 run_time)
 
       Cur_CDIF->ReadRawSector(tmpbuf, read_sec);	//, read_sec_end, read_sec_start);
       head_pos = read_sec;
+      PCFXLastActivityTS = monotonic_timestamp;	// QoQ private build: drive activity (spin-down model)
 
       for(int i = 0; i < 588 * 2; i++)
        cdda.CDDASectorBuffer[i] = MDFN_de16lsb(&tmpbuf[i * 2]);
@@ -2957,11 +3016,26 @@ static INLINE void RunCDRead(uint32 system_timestamp, int32 run_time)
      //
      // N.B. A test with Team Innocent shows that a more-realistic delay works fine.
      CDReadTimer += ((uint64) 1 * 2048 * System_Clock) / CD_DATA_TRANSFER_RATE;
+     PCFXReadPaused = true;
     }
+   }
+   else if(WhichSystem == SCSICD_PCFX && PCFXReadPaused && PCFXResumeLevel && din->CanRead() > PCFXResumeLevel)
+   {
+    // QoQ private build: reading stopped because the drive buffer filled; the drive does not restart until the
+    // host has drained the buffer down to the resume level (pcfx.cd_resume_level_kb).
+    CDReadTimer += ((uint64) 1 * 2048 * System_Clock) / CD_DATA_TRANSFER_RATE;
+   }
+   else if(WhichSystem == SCSICD_PCFX && PCFXReadPaused && PCFXResumeMs > 0)
+   {
+    // QoQ private build: the drive restarts after a pause; it has to wait for the disc to come back round to the
+    // next sector before data flows again (pcfx.cd_resume_ms).
+    PCFXReadPaused = false;
+    CDReadTimer += (int32)(((uint64) System_Clock * PCFXResumeMs) / 1000);
    }
    else
    {
     uint8 tmp_read_buf[2352 + 96];
+    PCFXReadPaused = false;
 
     if(TrayOpen)
     {
@@ -3001,11 +3075,15 @@ static INLINE void RunCDRead(uint32 system_timestamp, int32 run_time)
 
      SectorAddr++;
      SectorCount--;
+     PCFXLastActivityTS = monotonic_timestamp;	// QoQ private build: drive activity (spin-down model)
 
      if(CurrentPhase != PHASE_DATA_IN)
       ChangePhase(PHASE_DATA_IN);
 
-     CDReadTimer += ((uint64) 1 * 2048 * System_Clock) / CD_DATA_TRANSFER_RATE;
+     if(WhichSystem == SCSICD_PCFX && PCFXSectorScale != 1.0f)
+      CDReadTimer += (int32)(((double) 2048 * System_Clock / CD_DATA_TRANSFER_RATE) * PCFXSectorScale + 0.5);	// QoQ private build
+     else
+      CDReadTimer += ((uint64) 1 * 2048 * System_Clock) / CD_DATA_TRANSFER_RATE;
 
      if(Throttle120KBps && (++SectorIndex == 6))
      {
@@ -3380,7 +3458,9 @@ void SCSICD_Init(int type, int cdda_time_div, int32* left_hrbuf, int32* right_hr
 
  if(type == SCSICD_PCFX)
  {
-  din = new SimpleFIFO<uint8>(65536);	//4096);
+  // QoQ private build: drive read-ahead buffer size from pcfx.cd_buffer_kb (stock Mednafen: 64 KB).
+  // Any size works: SimpleFIFO allocates the next power of 2 for storage and limits its fill to this size.
+  din = new SimpleFIFO<uint8>(MDFN_GetSettingUI("pcfx.cd_buffer_kb") * 1024);	//4096);
  }
  else
  {
@@ -3505,10 +3585,16 @@ void SCSICD_StateAction(StateMem* sm, const unsigned load, const bool data_only,
 
  if(load)
  {
+  // QoQ private build: index masks use the storage size (a power of 2), so a non-power-of-2 buffer limit restores correctly.
   din->in_count %= din->size + 1;
-  din->read_pos &= din->size - 1;
-  din->write_pos = (din->read_pos + din->in_count) & (din->size - 1);
+  din->read_pos &= din->data.size() - 1;
+  din->write_pos = (din->read_pos + din->in_count) & (din->data.size() - 1);
   //printf("%d %d %d\n", din->in_count, din->read_pos, din->write_pos);
+
+  // QoQ private build: the reset and spin-down timers are not saved; after a load the drive counts as spinning with
+  // no reset pending, so the first read after a load gets no extra delay.
+  PCFXLastActivityTS = monotonic_timestamp;
+  PCFXLastResetTS = monotonic_timestamp - (int64)System_Clock * 60;
 
   if(load < 0x0935)
    cdda.CDDADiv /= 2;

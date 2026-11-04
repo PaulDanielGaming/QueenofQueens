@@ -186,6 +186,9 @@ class V810
 
  void Reset(void) MDFN_COLD;
 
+ // Enables the measured V810 flag-use pipeline stall (see v810_oploop.inc).  Off unless the system enables it.
+ void SetFlagUseStall(bool enabled) { FlagUseStall = enabled; }
+
  void StateAction(StateMem *sm, const unsigned load, const bool data_only);
 
  #ifdef WANT_DEBUGGER
@@ -271,6 +274,9 @@ class V810
  bool MemWriteBus32[256];
 
  int32 lastop;    // Set to -1 on FP/MUL/DIV, 0x100 on LD, 0x200 on ST, 0x400 on in, 0x800 on out, and the actual opcode * 2(or >= 0) on everything else.
+
+ bool FlagUseStall;	// Measured flag-use pipeline stall enabled (PC-FX only)
+ bool flagset;		// The instruction just retired wrote the PSW condition flags
 
  #define LASTOP_LD       0x100
  #define LASTOP_ST       0x200

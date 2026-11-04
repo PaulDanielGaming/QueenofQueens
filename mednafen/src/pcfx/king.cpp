@@ -1423,6 +1423,22 @@ static INLINE void SCSI_Reg3_Write(const v810_timestamp_t timestamp, uint8 V, bo
  }
 }
 
+// QoQ private build: extra CPU clocks charged for each write to the KRAM data port (KING register 0x0E), via OUT to
+// 0x604 or the 0xBC000000 window.  Stock Mednafen charges about 4 clocks per back-to-back OUT.H; gameblabla measured
+// 12.2 clocks (567 ns) per dense OUT.H on a real PC-FX with no BG fetch active (PCFXemu, DIAG7, 2026-11-01).
+// Set from pcfx.kram_write_clocks (pcfx.cpp); 0 = stock timing.
+static uint32 KRAMWriteExtraClocks = 0;
+
+void KING_SetKRAMWriteExtraClocks(uint32 clocks)
+{
+ KRAMWriteExtraClocks = clocks;
+}
+
+uint32 KING_KRAMWriteExtraClocks(uint32 A)
+{
+ return (KRAMWriteExtraClocks && (A & 0x704) == 0x604 && king->AR == 0x0E) ? KRAMWriteExtraClocks : 0;
+}
+
 void KING_Write16(const v810_timestamp_t timestamp, uint32 A, uint16 V)
 {
  int msh = A & 0x2;

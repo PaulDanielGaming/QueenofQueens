@@ -329,7 +329,7 @@ static void MDFN_FASTCALL mem_whword(v810_timestamp_t &timestamp, uint32 A, uint
  }
  else if(A >= 0xBC000000 && A <= 0xBFFFFFFF)
  {
-  timestamp += 2;
+  timestamp += 2 + KING_KRAMWriteExtraClocks(0x604);
   KING_Write16(timestamp, 0x604, V);
  }
  else if(A >= 0x80000000 && A <= 0x807FFFFF)

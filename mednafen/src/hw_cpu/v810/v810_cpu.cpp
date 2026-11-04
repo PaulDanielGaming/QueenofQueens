@@ -59,6 +59,9 @@ namespace Mednafen
 
 V810::V810()
 {
+ FlagUseStall = false;
+ flagset = false;
+
  #ifdef WANT_DEBUGGER
  CPUHook = NULL;
  ADDBT = NULL;
@@ -324,6 +327,7 @@ void V810::Reset()
  ilevel = -1;
 
  lastop = 0;
+ flagset = false;
 
  in_bstr = false;
  src_cache = 0;
@@ -598,6 +602,33 @@ INLINE uint32 V810::GetSREG(unsigned int which)
 				 RB_SETPC(PC_tmp);		\
 				}					\
 			      }
+
+//
+// V810 flag-use pipeline stall.  Measured on real hardware by David Shadoff (FPGA, 2025): a flag-READING instruction
+// (conditional branch, SETF, STSR from PSW) that immediately follows a flag-WRITING instruction costs 2 extra clocks,
+// e.g. "add -1,r18 ; bne loop" takes 6 clocks on hardware against Mednafen's 4.  Register-register data dependencies do
+// not stall.  Implementation and table from gameblabla's PCFXemu (commit cc3ab0b), indexed by the opcode dispatch
+// index used in v810_oploop.inc (1 = the instruction writes the PSW condition flags).
+//
+static const uint8 v810_op_writes_flags[256] =
+{
+  0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1,	// MOV ADD SUB CMP SHL SHR JMP SAR
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,	// MUL DIV MULU DIVU OR AND XOR NOT
+  0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1,	// MOV_I ADD_I SETF CMP_I SHL_I SHR_I EI SAR_I
+  0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0,	// TRAP RETI HALT - LDSR STSR DI BSTR
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,	// Bcond, BR, NOP
+  0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0,	// MOVEA ADDI JR JAL ORI ANDI XORI MOVHI
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,	// LD ST
+  0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0,	// IN CAXI OUT FPP
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,	// ... interrupt handler
+};
 
 #define RB_INCPCBY2()	{ if(RB_AccurateMode) PC += 2; else PC_ptr += 2; }
 #define RB_INCPCBY4()   { if(RB_AccurateMode) PC += 4; else PC_ptr += 4; }
@@ -1507,6 +1538,9 @@ void V810::StateAction(StateMem *sm, const unsigned load, const bool data_only)
 
  if(load)
  {
+  // One-instruction history, deliberately not saved so existing save states stay compatible; costs at most 2 clocks once.
+  flagset = false;
+
   // std::max is sanity check for a corrupted save state to not crash emulation,
   // std::min<int64>(0x7FF... is a sanity check and for the case where next_event_ts is set to an extremely large value to
   // denote that it's not happening anytime soon, which could cause an overflow if our current timestamp is larger

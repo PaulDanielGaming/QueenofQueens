@@ -210,6 +210,11 @@ void ForceEventUpdates(const uint32 timestamp)
  //printf("FEU: %d %d %d %d\n", next_pad_ts, next_timer_ts, next_adpcm_ts, next_king_ts);
 }
 
+// QoQ private build: CPU cost of a write to a VDC (HuC6270) data port (0x404/0x504), on top of the stock 2 clocks.
+// Calibrated against a 60 fps capture of a real PC-FX: graphics uploads in the black holds before the Disc B title
+// and the Disc A intro run at hardware speed with 36 extra clocks per data-port write. Setting pcfx.vdc_data_write_clocks.
+static uint32 VDCDataWriteExtraClocks = 0;
+
 #include "io-handler.inc"
 #include "mem-handler.inc"
 
@@ -592,6 +597,9 @@ static MDFN_COLD void LoadCommon(std::vector<CDInterface*> *CDInterfaces)
 
  MDFN_printf(_("V810 Emulation Mode: %s\n"), (cpu_mode == V810_EMU_MODE_ACCURATE) ? _("Accurate") : _("Fast"));
  PCFX_V810.Init(cpu_mode, false);
+ PCFX_V810.SetFlagUseStall(MDFN_GetSettingB("pcfx.v810_flag_stall"));
+ KING_SetKRAMWriteExtraClocks(MDFN_GetSettingUI("pcfx.kram_write_clocks"));
+ VDCDataWriteExtraClocks = MDFN_GetSettingUI("pcfx.vdc_data_write_clocks");
 
  uint32 RAM_Map_Addresses[1] = { 0x00000000 };
  uint32 BIOSROM_Map_Addresses[1] = { 0xFFF00000 };
@@ -1159,6 +1167,7 @@ static const MDFNSetting PCFXSettings[] =
   { "pcfx.disable_softreset", MDFNSF_NOFLAGS, gettext_noop("When RUN+SEL are pressed simultaneously, disable both buttons temporarily."), NULL, MDFNST_BOOL, "0", NULL, NULL, NULL, FXINPUT_SettingChanged },
 
   { "pcfx.cpu_emulation", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("CPU emulation mode."), NULL, MDFNST_ENUM, "auto", NULL, NULL, NULL, NULL, V810Mode_List },
+  { "pcfx.v810_flag_stall", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Emulate the V810 flag-use pipeline stall."), gettext_noop("Adds the 2-clock stall real hardware takes when a conditional branch, SETF or STSR PSW immediately follows an instruction that sets the condition flags (measured by David Shadoff). 0 restores stock Mednafen CPU timing."), MDFNST_BOOL, "1" },
   { "pcfx.bios", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Path to the ROM BIOS"), NULL, MDFNST_STRING, "pcfx.rom" },
   { "pcfx.fxscsi", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Path to the FX-SCSI ROM"), gettext_noop("Intended for developers only."), MDFNST_STRING, "0" },
   { "pcfx.disable_bram", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Disable internal and external BRAM."), gettext_noop("It is intended for viewing games' error screens that may be different from simple BRAM full and uninitialized BRAM error screens, though it can cause the game to crash outright."), MDFNST_BOOL, "0" },
@@ -1166,7 +1175,18 @@ static const MDFNSetting PCFXSettings[] =
   { "pcfx.internal_bram_size_kbytes", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Size of internal Backup memory file, in kilobytes. Intended for developers only."), NULL, MDFNST_UINT, "32", "32", "128" },
   { "pcfx.external_bram_size_kbytes", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Size of external Backup memory file, in kilobytes (i.e. FX-BMP cartridge)."), NULL, MDFNST_UINT, "128", "128", "8192" },
   { "pcfx.main_memory_size_mbytes", MDFNSF_EMU_STATE | MDFNSF_CAT_PATH, gettext_noop("Size of main memory, in megabytes (original console was 2)."), NULL, MDFNST_UINT, "2", "2", "8" },
-  { "pcfx.cd_seek_scale", MDFNSF_NOFLAGS, gettext_noop("Scale factor for simulated CD seek latency."), gettext_noop("Scales the head-travel delay applied to CD reads. 0 disables the delay entirely; 1.0 is the full modelled seek time."), MDFNST_FLOAT, "0.6", "0.0", "2.0" },
+  { "pcfx.cd_seek_scale", MDFNSF_NOFLAGS, gettext_noop("Scale factor for simulated CD seek latency, forward seeks."), gettext_noop("Scales the head-travel delay for reads ahead of the current head position. 0 disables the delay; 1.0 is the full PC Engine seek curve. 0.35 is calibrated against load gaps in a real PC-FX capture of Queen of Queens."), MDFNST_FLOAT, "0.35", "0.0", "2.0" },
+  { "pcfx.cd_seek_scale_back", MDFNSF_NOFLAGS, gettext_noop("Scale factor for simulated CD seek latency, backward seeks."), gettext_noop("Scales the head-travel delay for reads behind the current head position. 0.69 is calibrated against load gaps in a real PC-FX capture of Queen of Queens."), MDFNST_FLOAT, "0.69", "0.0", "2.0" },
+  { "pcfx.cd_reset_ms", MDFNSF_NOFLAGS, gettext_noop("Time in milliseconds after a CD drive reset before the drive delivers data."), gettext_noop("1920 is calibrated against load gaps in a real PC-FX capture of Queen of Queens. 0 is stock Mednafen."), MDFNST_FLOAT, "1920", "0", "10000" },
+  { "pcfx.cd_spindown_s", MDFNSF_NOFLAGS, gettext_noop("CD drive idle time in seconds after which the next read pays a spin-up delay."), gettext_noop("10.5 is calibrated against load gaps in a real PC-FX capture of Queen of Queens."), MDFNST_FLOAT, "10.5", "0", "600" },
+  { "pcfx.cd_spinup_ms_per_s", MDFNSF_NOFLAGS, gettext_noop("CD drive spin-up delay in milliseconds per second of idle beyond pcfx.cd_spindown_s."), gettext_noop("300 is calibrated against load gaps in a real PC-FX capture of Queen of Queens. 0 is stock Mednafen."), MDFNST_FLOAT, "300", "0", "10000" },
+  { "pcfx.cd_spinup_max_ms", MDFNSF_NOFLAGS, gettext_noop("Upper limit in milliseconds of the CD drive spin-up delay."), gettext_noop("3900 is the delay at the longest idle in the calibration capture (23.5 s)."), MDFNST_FLOAT, "3900", "0", "10000" },
+  { "pcfx.cd_sector_scale", MDFNSF_NOFLAGS, gettext_noop("Scale factor for the time the CD drive takes to deliver each sector."), gettext_noop("1.0 is the nominal 2x data rate and the calibrated value. Above 1.0 slows sustained reads."), MDFNST_FLOAT, "1.0", "0.5", "2.0" },
+  { "pcfx.kram_write_clocks", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Extra CPU clocks per write to KING's KRAM data port."), gettext_noop("Stock timing charges about 4 clocks per back-to-back OUT.H to KRAM; gameblabla measured about 12 on a real PC-FX (PCFXemu DIAG7). 0 is stock timing. No measurable effect on Queen of Queens FMV timing."), MDFNST_UINT, "0", "0", "64" },
+  { "pcfx.vdc_data_write_clocks", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Extra CPU clocks per write to a VDC data port."), gettext_noop("Added to the stock 2 clocks for writes to the HuC6270 data ports (0x404, 0x504). 36 is calibrated against graphics uploads in a real PC-FX capture of Queen of Queens. 0 is stock timing."), MDFNST_UINT, "36", "0", "256" },
+  { "pcfx.cd_buffer_kb", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("CD drive read-ahead buffer size in kilobytes."), gettext_noop("240 is calibrated against a real PC-FX capture of Queen of Queens; 64 is stock Mednafen. Save states made with a different size do not restore the drive buffer."), MDFNST_UINT, "240", "16", "1024" },
+  { "pcfx.cd_resume_level_kb", MDFNSF_NOFLAGS, gettext_noop("Buffered data level in kilobytes at which the CD drive restarts reading after its buffer filled."), gettext_noop("28 is calibrated against a real PC-FX capture of Queen of Queens. 0 restarts as soon as one sector fits (stock Mednafen)."), MDFNST_UINT, "28", "0", "1024" },
+  { "pcfx.cd_resume_ms", MDFNSF_NOFLAGS, gettext_noop("Delay in milliseconds before the CD drive delivers data again after restarting."), gettext_noop("280 is calibrated against a real PC-FX capture of Queen of Queens. 0 is stock Mednafen."), MDFNST_FLOAT, "280", "0", "1000" },
   { "pcfx.chroma_gain", MDFNSF_NOFLAGS, gettext_noop("Chroma gain applied to the YUV to RGB matrix."), gettext_noop("Above 1.0 trims residual opposite-channel content out of saturated colours, turning bright red into crimson. 1.0 is plain BT.601; 1.1384 is the full limited-range to full-range chroma correction."), MDFNST_FLOAT, "1.08", "0.50", "2.00" },
   { "pcfx.gamma", MDFNSF_NOFLAGS, gettext_noop("Midtone gamma."), gettext_noop("Below 1.0 pulls midtones down while leaving black and white alone, which makes saturated colours read deeper and richer. 1.0 disables."), MDFNST_FLOAT, "0.85", "0.50", "2.00" },
   { "pcfx.ntsc", MDFNSF_NOFLAGS, gettext_noop("NTSC video signal simulation."), gettext_noop("Recreates the analog bandwidth limiting and chroma bleed a CRT performs, which fills in hard luma edges rather than merely blurring them. Widens output to 602 pixels, so xscale needs reducing to suit."), MDFNST_ENUM, "off", NULL, NULL, NULL, NULL, NTSCModeList },

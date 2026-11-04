@@ -160,7 +160,7 @@ static void MDFN_FASTCALL port_wbyte(v810_timestamp_t &timestamp, uint32 A, uint
   }
   else if(A >= 0x400 && A <= 0x5FF) // 0x400-0x4FF: VDC-A ; 0x500-0x5FF: VDC-B
   {
-   timestamp += 2;
+   timestamp += 2 + ((A & 4) ? VDCDataWriteExtraClocks : 0);	// QoQ private build: VDC data-port write cost
 
    if(!(A & 4))
     Last_VDC_AR[(A >> 8) & 0x1] = V;
@@ -169,7 +169,7 @@ static void MDFN_FASTCALL port_wbyte(v810_timestamp_t &timestamp, uint32 A, uint
   }
   else if(A >= 0x600 && A <= 0x6FF)
   {
-   timestamp += 2;
+   timestamp += 2 + KING_KRAMWriteExtraClocks(A);
    KING_Write8(timestamp, A, V);
   }
   else if(A >= 0x700 && A <= 0x7FF)
@@ -232,7 +232,7 @@ static void MDFN_FASTCALL port_whword(v810_timestamp_t &timestamp, uint32 A, uin
   }
   else if(A >= 0x400 && A <= 0x5FF) // 0x400-0x4FF: VDC-A ; 0x500-0x5FF: VDC-B
   {
-   timestamp += 2;
+   timestamp += 2 + ((A & 4) ? VDCDataWriteExtraClocks : 0);	// QoQ private build: VDC data-port write cost
 
    if(!(A & 4))
     Last_VDC_AR[(A >> 8) & 0x1] = V;
@@ -241,7 +241,7 @@ static void MDFN_FASTCALL port_whword(v810_timestamp_t &timestamp, uint32 A, uin
   }
   else if(A >= 0x600 && A <= 0x6FF)
   {
-   timestamp += 2;
+   timestamp += 2 + KING_KRAMWriteExtraClocks(A);
    KING_Write16(timestamp, A, V);
   }
   else if(A >= 0x700 && A <= 0x7FF)
