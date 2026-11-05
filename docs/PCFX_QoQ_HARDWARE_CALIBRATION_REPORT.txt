@@ -1,0 +1,498 @@
+PC-FX MEDNAFEN BUILD (mednafen-pcfx-qoq) - HARDWARE CALIBRATION REPORT
+Paul Daniel
+November 4, 2026
+
+Base source:   github.com/PaulDanielGaming/queenofqueens, commit f9a5ad4 (October 27, 2026)
+Commits:       9e7245c (calibration), f02a0d6 (VDC data-port write cost off by default)
+Changed files: mednafen/src/cdrom/scsicd.cpp
+               mednafen/src/hw_cpu/v810/v810_cpu.cpp, v810_cpu.h, v810_oploop.inc
+               mednafen/src/pcfx/pcfx.cpp, timer.cpp, king.cpp, king.h, io-handler.inc, mem-handler.inc
+Full diff:     git diff f9a5ad4 f02a0d6
+Config change: pcfx.cd_seek_scale 0.35 in mednafen.cfg (or delete the line so the default applies). A cfg
+               written by the November 3 build also holds pcfx.vdc_data_write_clocks 36; set it to 0.
+
+
+1. HARDWARE REFERENCE
+---------------------
+
+Console:   NEC PC-FX in good working order, near-new laser, correctly adjusted.
+Disc:      original retail Queen of Queens Disc A and Disc B, bought new.
+Capture:   60 fps capture card, 720x480, single continuous recording (13 min 8 s).
+           File: 2026-11-02_22-01-35.mkv
+Content:   Disc A: power-on, BIOS, intro, title, VERSUS MODE, COM VS COM, Aja Kong vs Sakie Hasegawa,
+                   entrance videos, full match.
+           Disc B: power-on, BIOS, title, Scenario mode intro, wrestler select, soft reset, title, VERSUS MODE,
+                   COM VS COM, Aja Kong vs Sion, entrance videos, match.
+           Both matches are COM VS COM. The only inputs are menu choices and RUN on the VS screen.
+
+Disc images used for emulation: dumps of the same original discs.
+  Disc A track 2 MD5 44b2d229103be1e25293cdf25aba56ef (515,680,256 bytes)
+  Disc B track 2 MD5 7ed69a823ed1e05484a7a8c8c019866b (663,777,280 bytes)
+BIOS: pcfxv101.rom (MD5 e2fb7c7220e3a7838c2dd7e401a7f3d8).
+Emulator settings: the author's own mednafen.cfg (accurate CPU mode, pcfx.cdspeed 2), with the values under
+test passed on the command line.
+
+
+2. MEASUREMENT METHOD
+---------------------
+
+Recording:   the emulator ran with -qtrecord (PNG codec). Each recorded frame carries its emulated timestamp at
+             the PC-FX field rate (59.8261 Hz), so durations are emulated time, independent of host speed.
+             Intro runs were unthrottled. Runs with menu input ran at normal speed with key presses sent by a
+             script (xdotool), timed so that the drive idle time before each load matches the capture.
+Black gaps:  per-frame mean luma (ffmpeg signalstats). A frame is black below 31.3 on the capture (black level
+             30.0) and below 17.5 on the emulator (black level 16.0). The two thresholds are the same level after
+             the capture's luma scaling, measured on the title screen (capture 187.8, emulator 198.3) and on
+             black. Fades step every 3 to 5 fields, so the threshold choice moves no edge by more than a field.
+Intro:       Disc A, first frame of the NEC logo fade-in to the first frame of the title screen.
+             Disc B Scenario intro, first video frame after the Scenario start load to the first frame of the
+             wrestler select screen. Part 1 runs to the black hold in the middle, part 2 from the hold to the
+             end of the video.
+Drift:       31 scene cuts in the Disc A intro located on hardware and in the emulator, matched in order.
+             "Max drift" is the largest hardware-minus-emulator time difference at any matched cut.
+Pauses:      picture held for 5 or more fields during motion video, found by frame-to-frame difference.
+             Hardware threshold 0.8 (capture noise floor), emulator threshold 0.05 (lossless recording).
+             Counted in part 1 of the Disc B Scenario intro.
+Clip change: entrance video change (first wrestler to second wrestler), found as a scene cut. Each change waits
+             on one READ command, so it is a load measurement inside motion video.
+Drive log:   a temporary test build logged every drive command, READ (start sector, head position, sector
+             count, raw seek time), end of data and SCSI bus reset with emulated timestamps. The logging was
+             removed from the final source. The final build was re-measured without it.
+Fit:         emulated loads are serial (the game waits for each READ), so a change to the drive model moves a
+             gap by the sum of the changed delays of the reads inside it. The drive parameters were fitted to the
+             hardware gaps by linear least squares on that basis, then the final build was run and measured.
+Pictures:    framemd5 of every recorded frame, with repeated frames collapsed and sequences compared in order.
+
+Hardware results:
+  Disc A intro, NEC fade-in to title:       124.216 s (capture frames 2131 to 9584)
+  Disc B Scenario intro:                    47.217 s (part 1 23.950 s, hold 1.017 s, part 2 20.883 s,
+                                            load to wrestler select 1.367 s)
+  Disc B part 1 pauses:                     6, totalling 60 fields, at 3.80, 7.20, 10.93, 13.90, 17.58, 20.82 s
+                                            (lengths 10, 11, 10, 8, 10, 11 fields)
+  Disc B Scenario voice pitch:              identical to emulator (log-spectrum match at frequency scale 1.000)
+  Load gaps:                                section 6
+
+
+3. FINDINGS
+-----------
+
+3.1 Stock behaviour
+  Disc A intro:     122.138 s, 2.078 s short of hardware. Max drift 1.750 s.
+  Disc B Scenario:  45.531 s, 1.686 s short of hardware. Part 1: no pauses.
+  Loads:            boot loads 3.6 s short, Disc A match load 5.4 s short (section 6).
+
+3.2 Read pattern (drive log)
+  Disc A intro:     one READ command of 14,847 sectors.
+  Disc B Scenario:  one READ command of 4,241 sectors, played in about 45 s. The game uses about 63% of the
+                    2x data rate on average.
+  During playback the 64 KB drive FIFO fills and empties every 5 to 20 sectors (about every 0.1 s). The game
+  takes data in bursts, and the drive stops whenever the FIFO is full.
+  Loads:            the game resets the drive (SCSI bus reset, then TEST UNIT READY and MODE SELECT) before the
+                    second and third boot reads and after the first read of each match load. The READ after a
+                    reset follows it by 0.069 s in every case.
+
+3.3 Cause of the short FMV
+  On hardware, the drive stops reading when its buffer is full, restarts only after the game has drained the
+  buffer to a low level, and the first data after a restart arrives later than it would from a drive that never
+  stopped. When that wait outlasts the data the game still holds, the game holds the picture. These are the
+  pauses visible in the capture. Mednafen's drive restarts the instant one sector fits in its 64 KB FIFO, with
+  no delay, so the game never runs short.
+
+3.4 Cause of the load differences
+  Drive reset:  every load containing a reset runs 1.5 to 1.9 s long on hardware per reset. Mednafen's drive
+                is ready at once after a reset.
+  Spin-down:    the two loads that follow more than 10.5 s of drive idle run long beyond what the reset
+                explains (Disc A title to menu after 13.4 s idle: +0.85 s; Disc A match load after 23.5 s idle:
+                +3.8 s). Loads after 1.9 to 9.4 s idle show no such delay.
+  Seek:         forward seeks are faster than backward seeks on hardware. One forward seek of 12,741 sectors
+                plus its load takes 0.833 s on hardware, which leaves at most 0.27 s for the seek. The Scenario
+                start load, with two backward seeks, needs about 0.85 s for those two seeks. One scale on the
+                PC Engine curve leaves 0.32 s of error on that load (section 6.3).
+
+3.5 Short black holds (not changed)
+  The black holds before the Disc B title and before the Disc A intro contain no drive command. During each hold
+  the game uploads graphics through the two VDC (HuC6270) data ports: about 60,000 writes to 0x404 and 0x504 in
+  five fields before the Disc B title (temporary I/O probe, emulator). Mednafen charges 2 CPU clocks per VDC
+  write. The hold length follows the upload time; the fades on both sides step at the same rate on hardware and
+  in the emulator. With 36 extra clocks per data-port write, fitted on the Disc B title hold alone:
+    Disc B NEC logo to title hold      hardware 0.400 s   stock timing 0.284 s   with the change 0.401 s
+    Disc A NEC logo to intro hold      hardware 0.583 s   stock timing 0.485 s   with the change 0.602 s
+    Disc A intro, NEC fade-in to title hardware 124.216 s stock timing 124.060 s with the change 124.176 s
+  The same cost slows the VS-screen name dissolve before each match:
+    VS-screen name dissolve            hardware 19 fields stock timing 18 fields with the change 34 fields
+  A single per-write cost cannot match both, so the setting is kept (pcfx.vdc_data_write_clocks, section 4.9)
+  but defaults to 0, stock timing. The holds stay about 0.1 s short.
+
+3.6 What was ruled out
+  CPU timing:           V810 flag-use stall on vs off changes the Disc A intro by 1 frame (0.017 s).
+  ADPCM rate:           voice pitch matches hardware exactly.
+  KRAM write cost:      +8 clocks per KRAM data-port write (gameblabla's DIAG7 figure) changes the Disc A intro by
+                        0.016 s and the Disc B title hold by 1 field.
+  CPU memory timing:    gameblabla's DIAG11 model (PCFXemu ef7b891: cache refill 7 clocks, DRAM page change
+                        4 clocks, posted RAM writes, no uncached fetch penalty) changes the Disc B boot load by
+                        0.016 s and the title hold by 0.
+  Extra RAM wait:       +2 clocks on every RAM read, or +1 on every RAM write, changes the Disc B title hold by 0.
+  Command latency:      a fixed delay per READ (gameblabla measured about 7 fields for TEST UNIT READY) fits as
+                        -0.12 s per read, which is not physical. Left out.
+  Read errors/retries:  the reference console and disc are in near-new condition.
+
+
+4. CHANGES
+----------
+
+Each item lists what it is, where it is, the setting, the default and the stock-equivalent value.
+
+4.1 Drive read-ahead model (new)
+  What:     buffer size, restart level and restart delay for the PC-FX CD drive.
+  Where:    cdrom/scsicd.cpp (SCSICD_Init, DoREADBase, RunCDRead, SCSICD_StateAction); settings in pcfx/pcfx.cpp.
+  Settings: pcfx.cd_buffer_kb         default 240    stock 64
+            pcfx.cd_resume_level_kb   default 28     stock 0
+            pcfx.cd_resume_ms         default 280    stock 0
+  Source:   fitted to the Disc A and Disc B intros in the capture (section 5).
+  Note:     the FIFO stores data in the next power-of-2 size and limits its fill to the set size. The save-state
+            restore masks positions with the storage size, so any buffer size restores correctly. Save states
+            made with a different pcfx.cd_buffer_kb do not restore the drive buffer.
+
+4.2 Seek scales, forward and backward (existing setting redefined, one new)
+  What:     multipliers on the PC Engine seek curve (get_pce_cd_seek_ms, seektime_pce.h, by Dave Shadoff),
+            one for reads ahead of the head and one for reads behind it.
+  Where:    cdrom/scsicd.cpp (DoREADBase); settings in pcfx/pcfx.cpp.
+  Settings: pcfx.cd_seek_scale        default 0.35   (forward; was one scale for both, previous value 0.6)
+            pcfx.cd_seek_scale_back   default 0.69   (new)
+            Stock Mednafen has no PC-FX seek delay.
+  Source:   least-squares fit to 11 hardware load measurements (section 6).
+  Config:   mednafen.cfg sets pcfx.cd_seek_scale, so the line must read 0.35 (or be deleted).
+
+4.3 Drive reset delay (new)
+  What:     after a SCSI bus reset the drive answers commands at once but delivers no data until this long after
+            the reset. The power-on reset is covered by the same rule. The BIOS issues its first READ 4.9 s after
+            power-on, so it sees no delay.
+  Where:    cdrom/scsicd.cpp (VirtualReset, DoREADBase, SCSICD_StateAction); setting in pcfx/pcfx.cpp.
+  Setting:  pcfx.cd_reset_ms          default 1920   stock 0
+  Source:   same fit (section 6). The fitted extra time at the READ 0.069 s after the reset is 1.854 s.
+  Related:  gameblabla measured about 1 s of END OF VOLUME after a bus reset plus a spin-up on the first read
+            (PCFXemu cb13e4e, DIAG5). His model returns error codes to the game. This one delays the data, which
+            leaves the game's command flow unchanged.
+
+4.4 Drive spin-down (new)
+  What:     when the drive has delivered no sector for longer than pcfx.cd_spindown_s, the next READ pays a
+            spin-up delay that grows with the idle time beyond that point, up to a limit.
+  Where:    cdrom/scsicd.cpp (SCSICD_Power, DoREADBase, RunCDRead, CD-DA sector read, SCSICD_StateAction);
+            settings in pcfx/pcfx.cpp.
+  Settings: pcfx.cd_spindown_s        default 10.5
+            pcfx.cd_spinup_ms_per_s   default 300    stock 0
+            pcfx.cd_spinup_max_ms     default 3900   (the delay at 23.5 s idle, the longest idle in the capture)
+  Source:   same fit (section 6).
+  Note:     the idle and reset timers are not saved in save states. After a state load the drive counts as
+            spinning with no reset pending.
+  Related:  gameblabla's model applies a 0.6 s spin-up after 1.5 s idle (cb13e4e). The capture shows no delay
+            after 9.4 s idle (Disc B match load), so that threshold is not used.
+
+4.5 Sector delivery scale (new, left at 1.0)
+  What:     multiplier on the per-sector delivery time.
+  Where:    cdrom/scsicd.cpp (RunCDRead); setting in pcfx/pcfx.cpp.
+  Setting:  pcfx.cd_sector_scale      default 1.0    stock 1.0
+  Source:   an early fit used 1.077 (Disc A 124.127 s, max drift 0.579 s, Disc B unchanged at 45.666 s).
+            The drive read-ahead model replaces it and fits both discs at 1.0.
+
+4.6 KRAM data-port write cost (new, left at 0)
+  What:     extra CPU clocks per write to KING register 0x0E through port 0x604 or the 0xBC000000 window.
+  Where:    pcfx/king.cpp, king.h, io-handler.inc, mem-handler.inc; setting in pcfx/pcfx.cpp.
+  Setting:  pcfx.kram_write_clocks    default 0      stock 0
+  Source:   gameblabla, PCFXemu, DIAG7 measurement (12.2 clocks per dense OUT.H against about 4 in stock).
+            No measurable effect on Queen of Queens timing (section 3.6).
+
+4.7 V810 flag-use pipeline stall (ported)
+  What:     2 extra clocks when a conditional branch, SETF, or STSR PSW immediately follows an instruction
+            that writes the PSW condition flags. Unconditional BR is exempt.
+  Where:    hw_cpu/v810/v810_cpu.cpp, v810_cpu.h, v810_oploop.inc; setting in pcfx/pcfx.cpp. PC-FX only.
+            The Virtual Boy core keeps stock timing.
+  Setting:  pcfx.v810_flag_stall      default 1      stock 0
+  Source:   hardware measurement by David Shadoff (FPGA work, 2025), as cited in gameblabla's PCFXemu commit
+            cc3ab0b, which also supplies the implementation and opcode table.
+  Verified: cycle test on this core, fast and accurate modes:
+              add -1,r18 / bne loop                      4 clocks stock, 6 clocks with stall (hardware: 6)
+              add -1,r18 / nop / bne loop                5 clocks both (no adjacent flag writer)
+              add / setf / mov / cmp / bne loop          7 clocks stock, 11 with stall (two stalls)
+
+4.8 Timer zero flag (ported)
+  What:     the timer's zero flag (control D2) sets on every underflow even with the timer interrupt (D0)
+            disabled. The interrupt line asserts only when D0 and D2 are both set.
+  Where:    pcfx/timer.cpp (FXTIMER_Update, FXTIMER_Write16).
+  Source:   measured by gameblabla on a real PC-FX (PCFXemu commit 5b28a36, DIAG9 K14).
+
+4.9 VDC data-port write cost (new, left at 0)
+  What:     extra CPU clocks for each write to a VDC data port (0x404 VDC-A, 0x504 VDC-B), on top of the stock
+            2 clocks. Register-select writes keep the stock cost.
+  Where:    pcfx/io-handler.inc (port_wbyte, port_whword); setting in pcfx/pcfx.cpp.
+  Setting:  pcfx.vdc_data_write_clocks   default 0    stock 0
+  Source:   36 fits the Disc B NEC logo to title hold and the Disc A intro, but nearly doubles the VS-screen name
+            dissolve (section 3.5), so the default is stock timing.
+
+Reviewed in PCFXemu and not ported (repository rechecked November 3, 2026; last commit ef7b891, November 1):
+  KING SCSI interrupt latch change (5b28a36): affects every CD read and replaces long-standing Mednafen code.
+  VDC pre-mix change (2c9166a): contradicts HuC6261 manual section 2.3.2 (upper VDC selected on chroma key).
+  Measured seek curve (seektime_pcfx.c, cb13e4e): forward 95 to 100 fields beyond 4,000 sectors at 90% scale,
+    about 1.5 s for a 12,741-sector forward seek. The capture leaves at most 0.27 s for that seek (section 3.4).
+    The curve also makes backward seeks faster than forward ones. The capture shows the reverse.
+  Command latency, 1.5 s spin-down threshold, post-reset error codes (cb13e4e): see sections 3.6 and 4.3 to 4.4.
+  CPU memory timing (ef7b891): no effect on Queen of Queens (section 3.6).
+  K-BUS grant model, strict CD drive model, Mode 2 Form 2 video, video presentation filters: large rewrites in
+    a different code base, marked tentative, or for homebrew discs and display.
+
+
+5. CALIBRATION RUNS: DRIVE READ-AHEAD MODEL
+-------------------------------------------
+
+All runs: sector scale 1.0, V810 flag stall on. buffer KB / restart level KB / restart delay ms / seek scale
+(one scale for both directions at the time of these runs). Measured with the earlier marker method
+(Disc B part times on a different black threshold, so part values here differ from section 7 by up to 0.08 s).
+
+  Setting              Disc A intro  A error  A max drift  Disc B scenario  B error  B part 1 pauses
+  -------------------  ------------  -------  -----------  ---------------  -------  ---------------
+  64 / 0 / 0 / 0.5     122.138 s     -2.078   1.750 s      45.531 s         -1.686   0 / 0 fields
+  64 / 0 / 150 / 0.5   122.138 s     -2.078   1.750 s      -                -        -
+  64 / 0 / 200 / 0.5   -             -        -            45.532 s         -1.685   -
+  64 / 0 / 300 / 0.5   126.817 s     +2.601   1.389 s      46.852 s         -0.365   -
+  64 / 0 / 330 / 0.5   -             -        -            48.056 s         +0.839   10 / 58 fields
+  64 / 0 / 400 / 0.5   -             -        -            50.747 s         +3.530   -
+  256 / 24 / 300 / 0.5 124.144 s     -0.072   0.263 s      47.454 s         +0.237   6 / 72 fields
+  256 / 24 / 280 / 0.5 123.925 s     -0.291   0.413 s      47.270 s         +0.053   6 / 65 fields
+  256 / 24 / 290 / 0.5 124.077 s     -0.139   0.313 s      47.405 s         +0.188   6 / 68 fields
+  224 / 24 / 280 / 0.5 124.929 s     +0.713   0.634 s      47.304 s         +0.087   6 / 60 fields
+  208 / 24 / 280 / 0.5 -             -        -            47.922 s         +0.705   7 / 85 fields
+  256 / 40 / 290 / 0.6 -             -        -            46.785 s         -0.432   6 / 43 fields
+  240 / 28 / 290 / 0.6 124.361 s     +0.145   0.212 s      47.321 s         +0.104   6 / 62 fields
+  232 / 28 / 280 / 0.6 124.377 s     +0.161   0.212 s      47.321 s         +0.104   6 / 62 fields
+  240 / 28 / 280 / 0.6 124.143 s     -0.073   0.278 s      47.203 s         -0.014   6 / 59 fields  (chosen)
+
+  Hardware:            124.216 s                           47.217 s                  6 / 60 fields
+
+Effect of each setting, from the runs above:
+  Buffer size sets the spacing of the pauses (larger buffer, longer spacing).
+  Restart level sets how much data the game still holds when the drive restarts (higher level, shorter pauses).
+  Restart delay sets how long the game waits after a restart (longer delay, longer pauses).
+
+Disc B part 1 pause positions (s from start of video):
+  Hardware              3.80   7.20   10.93  13.90  17.58  20.82
+  240 / 28 / 280 final  3.99   7.61   11.23  14.51  18.20  22.11   (final build, section 7)
+  64 / 0 / 0 / 0.5      none
+
+
+6. CALIBRATION: LOAD TIMING (SEEK SCALES, RESET DELAY, SPIN-DOWN)
+-----------------------------------------------------------------
+
+6.1 Hardware load measurements
+  Gap (capture time)                          Hardware   Idle before   Drive resets   Reads (direction, sectors)
+  ------------------------------------------  ---------  ------------  -------------  -------------------------------
+  Disc A boot load, BIOS fade to NEC logo     11.484 s   (power-on)    2              fwd 2,518, fwd 21,099, back 15,709
+    (24.054 to 35.538)
+  Disc B boot load (440.004 to 451.638)       11.634 s   (power-on)    2              fwd 2,518, fwd 16,196, back 10,806
+  Disc A title to menu (172.238 to 173.854)    1.616 s   13.4 s        0              fwd 2,026
+  Disc B title to menu, 1st (460.388)          0.833 s   9.05 s        0              fwd 12,741
+  Disc B title to menu, 2nd (549.071)          0.883 s   5.9 s         0              fwd 12,741
+  Disc B Scenario start to intro (464.021)     2.533 s   2.9 s         0              back 2,199, fwd 1,989, back 12,173
+  Disc B intro end to wrestler select          1.367 s   1.9 s         0              fwd 5,704, fwd 2,171
+    (512.404)
+  Disc A match load (197.288 to 211.371)      14.083 s   23.5 s        1              back 20,104, then 7 forward
+                                                                                      (3,689 from reset, 513, 16,771,
+                                                                                      33, 112, 113, 315)
+  Disc B match load (559.321 to 570.038)      10.717 s   9.4 s         1              back 15,406, then 8 more
+                                                                                      (7 forward, 1 backward)
+  Disc A entrance clip change (212.117 to     11.116 s   0             0              fwd 4,966
+    223.233)
+  Disc B entrance clip change (570.817 to     11.183 s   0             0              fwd 10,533
+    582.000)
+
+  Idle before = time from the end of the previous drive read to this load's first READ, estimated from the
+  capture with the emulator's read-to-screen offsets. Reads and directions are from the emulator drive log on
+  the same path. The head position after a reset is sector 0 (Mednafen and PCFXemu both do this, as the drive
+  re-initialises).
+
+6.2 Fit result (model: PC Engine curve times a forward or backward scale, plus reset delay, plus spin-up
+    k x (idle - threshold) above the threshold)
+  Forward scale 0.352, backward scale 0.693, reset 1.854 s extra at the READ 0.069 s after the reset,
+  spin-up 0.300 s per second of idle above 10.5 s.
+  Rounded settings: 0.35, 0.69, 1920 ms (1.854 s + 0.069 s), 10.5 s, 300 ms/s.
+  Sum of squared error 0.0495, largest error 0.120 s over the 11 measurements.
+
+  Gap                               Hardware   Before (seek)    Fit       Fit error
+  --------------------------------  ---------  ---------------  --------  ---------
+  Disc A boot load                  11.484 s   7.890 s (0.5)    11.551 s  +0.067
+  Disc B boot load                  11.634 s   8.057 s (0.6)    11.522 s  -0.112
+  Disc A title to menu               1.616 s   0.819 s (0.5)     1.617 s  +0.001
+  Disc B title to menu, 1st          0.833 s   1.002 s (0.6)     0.823 s  -0.010
+  Disc B title to menu, 2nd          0.883 s   0.936 s (0.5)     0.829 s  -0.054
+  Disc B Scenario start to intro     2.533 s   2.474 s (0.6)     2.466 s  -0.067
+  Disc B intro end to select         1.367 s   1.505 s (0.6)     1.247 s  -0.120
+  Disc A match load                 14.083 s   8.659 s (0.5)    14.083 s  -0.000
+  Disc B match load                 10.717 s   9.210 s (0.5)    10.808 s  +0.091
+  Disc A entrance clip change       11.116 s   11.166 s (0.5)   11.086 s  -0.030
+  Disc B entrance clip change       11.183 s   11.249 s (0.5)   11.145 s  -0.038
+
+  "Before" is the build before this round (drive read-ahead model, one seek scale, no reset or spin-down
+  delay), at the seek scale shown.
+
+6.3 Seek model forms compared (same reset and spin-up terms; leave-one-out = each gap predicted from a fit to
+    the other ten)
+  Form                                           SSE      Largest error   Leave-one-out rms   Leave-one-out max
+  ---------------------------------------------  -------  --------------  ------------------  -----------------
+  PCE curve x forward / backward scale (chosen)  0.0495   0.120 s         0.191 s             0.459 s
+  Fixed time per seek, forward / backward        0.1161   0.157 s         0.376 s             0.956 s
+  Fixed time + PCE curve term, per direction     0.0316   0.135 s         0.359 s             0.891 s
+  PCE curve x one scale (f = b = 0.447)          0.1393   0.316 s         -                   -
+  Same as chosen, plus fixed latency per READ    0.0365   0.111 s         -                   -
+    (latency fits as -0.12 s, not physical)
+
+  The Disc A title-to-menu and match loads are the only loads after more than 10.5 s of idle, so the spin-up
+  rate and threshold rest on those two points. The threshold is bracketed by the Disc B match load (9.4 s idle,
+  no spin-up delay) and the Disc A title-to-menu load (13.4 s idle).
+
+
+7. FINAL BUILD CHECKS (default settings, pcfx.cd_seek_scale 0.35)
+-----------------------------------------------------------------
+
+Intros:
+  Disc A intro                 124.060 s against hardware 124.216 s (0.156 s short), max drift 0.361 s.
+  Disc B Scenario intro        46.902 s against hardware 47.217 s (0.315 s short).
+                               Part 1 23.986 s (hw 23.950), part 2 20.811 s (hw 20.883),
+                               hold 0.869 s (hw 1.017), load to wrestler select 1.237 s (hw 1.367).
+  Disc B part 1 pauses         6 pauses, 58 fields (hardware 6 pauses, 60 fields).
+
+  The Disc A intro was 124.143 s in the build before this round. It starts with a 567-sector forward seek after
+  the NEC logo. At the calibrated forward scale that seek is 0.096 s shorter, and the black hold before the intro
+  (hardware 0.583 s, emulator 0.485 s) runs short by 0.098 s. Sections 3.5 and 9 cover the black holds.
+
+VS-screen name dissolve:
+  hardware 19 fields, final build 18 fields (stock VDC timing).
+
+Loads, measured on the final build:
+  Gap                               Hardware   Final build   Error    Idle (hw / emulator)
+  --------------------------------  ---------  -----------  -------  ---------------------
+  Disc A boot load                  11.484 s   11.533 s     +0.049   power-on
+  Disc B boot load                  11.634 s   11.483 s     -0.151   power-on
+  Disc A title to menu               1.616 s    1.689 s     +0.073   13.4 / 13.7 s
+  Disc B title to menu, 1st          0.833 s    0.836 s     +0.003   9.05 / 9.04 s
+  Disc B title to menu, 2nd          0.883 s    0.836 s     -0.047   5.9 / 5.6 s
+  Disc B Scenario start to intro     2.533 s    2.441 s     -0.092   2.9 / 3.4 s
+  Disc B intro end to select         1.367 s    1.237 s     -0.130   1.9 / 1.9 s
+  Disc A match load                 14.083 s   14.074 s     -0.009   23.5 / 23.6 s
+  Disc B match load                 10.717 s   10.798 s     +0.081   9.4 / 9.3 s
+  Disc A entrance clip change       11.116 s   11.082 s     -0.034   -
+  Disc B entrance clip change       11.183 s   11.165 s     -0.018   -
+
+  Disc A title to menu after 7.2 s idle (second Disc A run, earlier key press): 0.752 s, no spin-up delay
+  applied (fit 0.74 s). This run also gives the Disc A entrance clip change and the section 8 match.
+
+  Stock drive model on the same loads: boot loads 3.6 s short, Disc A match load 5.4 s short, Disc A title to
+  menu 0.8 s short.
+
+Pictures:
+  Disc A boot and intro        3,763 distinct pictures in order, identical to the stock drive model with zero
+                               mismatches. Only hold times differ.
+  Disc B Scenario intro        1,317 distinct pictures in order, identical to the stock drive model with zero
+                               mismatches.
+  Grey-block check             the Scenario intro pictures match the stock drive model, as they did in the previous
+                               round when the grey-block check passed (columns 0-1 of strips 9-10, no uniform grey
+                               blocks). The drive changes do not touch video decode.
+  V810 stall on vs off         Disc A pictures identical in order (previous round).
+
+Builds:
+  Linux and Windows (x86_64-w64-mingw32) compile with no new warnings.
+  Windows build under Wine, Disc A boot, intro and title, 18,218 frames: identical frame for frame to the
+  Linux build.
+
+
+8. GAMEPLAY LATENCY BETWEEN TECHNIQUES
+--------------------------------------
+
+Measured: the match-screen gap before each move video. A move video is detected when the screen's side strips
+go black around the centre window. Both hardware matches and both emulator matches are COM VS COM, started with
+RUN on the VS screen about as long after the VS screen appears as on hardware (Disc A 6.8 s, Disc B 3.5 s).
+
+  Match                                   Moves   Gap min   10th pct   Median   Fastest gaps
+  --------------------------------------  ------  --------  ---------  -------  -------------------------
+  Hardware, Disc A (Aja vs Hasegawa)      23      0.833 s   1.090 s    2.583 s  0.83, 0.90, 1.07, 1.18
+  Final build, Disc A                     26      1.203 s   1.404 s    2.833 s  1.20, 1.30, 1.40, 1.40
+  Hardware, Disc B (Aja vs Sion)          29      0.917 s   1.050 s    1.933 s  0.92, 0.93, 1.05, 1.05
+  Final build, Disc B                     27      0.384 s   1.250 s    2.541 s  0.38, 1.09, 1.17, 1.30
+
+Limits: the computer opponents choose different moves on hardware and in the emulator from the first move on,
+so the matches are not move-for-move comparisons. Most gaps include the computer's decision time. The 0.384 s
+emulator gap is a two-part move (Aja climbs, then the elbow drop video) with one read between the parts.
+
+Long-seek check (Disc B match, final build settings):
+  Method:  each hardware move video was matched by picture to the same video in the emulator match (correlation
+           0.92 to 0.97 for 19 of 28 transitions). The emulator drive log gives each video's disc position, so the
+           seek between consecutive hardware videos is known. Aja's move videos sit near sectors 40,000 to 78,000,
+           Sion's near 241,000 to 324,000, so a change of attacker is a seek of about 275,000 sectors.
+  Result:  time left for the computer's decision = hardware gap - (modelled seek + data and CPU time).
+             Backward 283,246 sectors (seek 1.40 s):  0.66 s left
+             Forward 275,723 sectors (seek 0.72 s):   0.48 s left
+             Forward 283,095 sectors (seek 0.74 s):   1.16 s left
+           Apart from one two-part move (0.02 s) and one 0.14 s case, the emulator match's shortest decisions
+           are 0.67 to 0.72 s. The backward long seek agrees within about 0.05 s. The forward long seek is at most about 0.2 s long; one sample.
+  Tools:   vmatch.py, seekcheck.py, seekpce.py (section 10).
+
+
+9. OPEN ITEMS
+-------------
+
+9.1 Black holds
+  What:    three black holds run short in the emulator with no drive command inside them.
+             Disc B NEC logo to title          hardware 0.400 s (24 fields), final build 0.284 s (17 fields)
+             Disc A NEC logo to intro          hardware 0.583 s, final build 0.485 s (contains one seek)
+             Disc B Scenario intro mid hold    hardware 1.017 s, final build 0.869 s
+  Cause:   the first two follow the VDC upload time (section 3.5). pcfx.vdc_data_write_clocks 36 corrects them
+           but slows the VS-screen name dissolve, so it is off by default. The Scenario mid hold has no VDC
+           uploads (I/O probe) and sits inside one streaming READ; its cause is not identified.
+  Effect:  the Disc A intro measurement and the Disc B Scenario total each include one of these holds.
+
+9.2 Spin-up curve
+  What:    the spin-up rate and threshold rest on two loads (section 6.3). Idle times between 13.4 s and 23.5 s
+           are interpolated and longer idle times are held at the 3.9 s limit. Matches do not leave the drive
+           idle long enough to reach the threshold.
+
+
+10. TEST TOOLS
+--------------
+
+Scripts written for these tests (shell and Python, run against the Linux build of the same source). Paths in
+the scripts are those of the test machine.
+  run_intro.sh    boot a disc unthrottled and record, with start-up hang retry
+  run_match.sh    Disc B: start Scenario mode, play the intro, enter the first match, record
+  run_nav.sh      boot a disc at normal speed, play a timed key sequence, record (seq*.txt key sequences)
+  calibA.sh       Disc A intro run and score
+  calibB.sh       Disc B Scenario intro run and score
+  cpu_test.sh     unthrottled boot run with test settings, black-gap listing
+  introlen.py     Disc A intro markers
+  drift2.py       scene-cut alignment against the hardware capture
+  freezes.py      pause detection
+  clips.py        move-video and gap detection in matches
+  blackruns.py    black-gap detection (section 5 runs)
+  yblack.py       black-gap detection at the matched thresholds (sections 6 and 7)
+  cuts.py         scene-cut detection (entrance clip changes)
+  verify.py       black gaps with the reads, resets and idle time inside each (needs the drive log build)
+  gaps.py         section 6 dataset
+  fit.py          section 6.2 least-squares fit
+  fit2.py         section 6.3 model comparison with leave-one-out
+  picid.py        picture identity comparison
+  vmatch.py       hardware move video to emulator move video matching by picture (section 8)
+  seekcheck.py    long-seek check from matched move videos (section 8)
+  seekpce.py      PC Engine seek curve transcribed for the analysis scripts
+  wine_run.sh     Windows build under Wine, Disc A boot and intro
+Hardware markers were taken from the capture with the same tools.
+
+The test tools and the test data below are not in this repository. They are available from the author.
+
+Test data:
+  drive-logs/       drive command logs (READ, end of data, bus reset, command codes) for the Disc A VERSUS
+                    path, the Disc B Scenario path and the Disc B VERSUS path, before this round (seek 0.5 or 0.6)
+                    and with the final model. READ line: time, head position, start sector, sector count, raw
+                    PCE seek time in ms.
+  black-gaps/       black-gap lists for the hardware capture, the final-build runs and the runs with the
+                    VDC write cost.
+  gameplay/         Disc B move-video matches, emulator move decomposition and the long-seek check (section 8).
+  fit_output.txt, fit_model_comparison.txt   output of fit.py and fit2.py (section 6).
+  discA_intro_drift_final.txt                 Disc A scene-cut drift, final build (section 7).
+  calibration_runs_log.txt                    every scored intro run, in order.

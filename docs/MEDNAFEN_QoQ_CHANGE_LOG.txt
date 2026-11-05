@@ -1,20 +1,28 @@
 ================================================================
 Mednafen PC-FX : change log for the Queen of Queens build
                : Paul Daniel
-               : last updated 2026-09-02
+               : last updated 2026-11-04
 ================================================================
 
-  Five improvements, across four files plus one added library.
-  Everything else is stock.
+  Five improvements, across four files plus one added library,
+  and a timing calibration against real hardware (November
+  2026). Everything else is stock.
 
       1. confetti bar repair            rainbow.cpp
       2. CD seek latency between clips  scsicd.cpp + pcfx.cpp
       3. grey block fix                 rainbow.cpp
       4. colour approximation fix       king.cpp
       5. NTSC signal simulation         king.cpp + ntsc/
+      6. hardware timing calibration    scsicd.cpp, v810/,
+                                        pcfx.cpp, timer.cpp,
+                                        king.cpp, io-handler.inc,
+                                        mem-handler.inc
 
   The seek latency derives from David Shadoff's PC Engine CD
-  work — it reuses the existing get_pce_cd_seek_ms model.
+  work — it reuses the existing get_pce_cd_seek_ms model. Two
+  of the calibration changes are ported from Sauce's PCFXemu
+  (gameblabla), one resting on a hardware measurement by David
+  Shadoff. Section 8 has the details.
 
 ================================================================
 1. rainbow.cpp — CONFETTI REPAIR                    (frozen v20)
@@ -166,7 +174,12 @@ Mednafen PC-FX : change log for the Queen of Queens build
     be told apart by eye in side-by-side testing (emulator on an
     LCD versus real PC-FX through tink2x on a CRT, same
     wrestlers). Settled at 0.5. Chosen by eye, not frame
-    counted, and deliberately not nitpicked further.
+    counted.
+
+    REPLACED November 2026 (section 8): the single scale was
+    split into a forward and a backward scale, fitted to 11
+    load gaps in a 60 fps hardware capture. Forward 0.35,
+    backward 0.69.
 
   REJECTED
     An earlier attempt in king.cpp, inflating RAINBOWBusyCount
@@ -179,8 +192,11 @@ Mednafen PC-FX : change log for the Queen of Queens build
 4. pcfx.cpp — SEEK SCALE SETTING
 ----------------------------------------------------------------
   Registers pcfx.cd_seek_scale in PCFXSettings, next to
-  pcfx.cdspeed. MDFNST_FLOAT, default 0.5, range 0.0 to 2.0,
-  where 0 disables the delay entirely.
+  pcfx.cdspeed. MDFNST_FLOAT, range 0.0 to 2.0, where 0
+  disables the delay entirely. Default 0.5 at first, now 0.35,
+  and since November 2026 it covers forward seeks only;
+  pcfx.cd_seek_scale_back (default 0.69) covers backward
+  seeks. Section 8 lists the other settings added then.
 
   scsicd.cpp reads it through MDFN_GetSettingF at the point of
   use, replacing the old hardcoded constant. Seek tuning is now
@@ -383,11 +399,77 @@ Mednafen PC-FX : change log for the Queen of Queens build
   another. The face has red, blue and skintone together.
 
 ================================================================
+8. HARDWARE TIMING CALIBRATION                   (November 2026)
+----------------------------------------------------------------
+  REFERENCE
+    A 60 fps capture of a near-new PC-FX running the original
+    Disc A and Disc B, frame-counted against the emulator. Full
+    method and numbers: PCFX_QoQ_HARDWARE_CALIBRATION_REPORT.txt
+    in this folder.
+
+  PROBLEM
+    Stock FMV ran short: Disc A intro 122.14 s against 124.22 s
+    on hardware. Boot loads ran 3.6 s short and the Disc A match
+    load 5.4 s short.
+
+  CAUSE
+    The drive, not the CPU. On hardware the drive stops when
+    its buffer is full, restarts only once the game has drained
+    it to a low level, and delivers late after a restart, so the
+    game briefly holds the picture. Mednafen's drive restarts
+    the moment one sector fits, so FMV never waits. Loads were
+    short because Mednafen's drive is ready at once after a
+    reset and never spins down.
+
+  CHANGES (scsicd.cpp unless noted)
+    - read-ahead model: 240 KB buffer, 28 KB restart level,
+      280 ms restart delay
+    - seek split into forward 0.35 and backward 0.69 scales on
+      the PC Engine curve
+    - 1.92 s drive reset delay
+    - spin-up delay after 10.5 s idle, 300 ms per second of
+      idle beyond that, up to 3.9 s
+    - V810 flag-use stall, ported from PCFXemu cc3ab0b (Sauce),
+      based on David Shadoff's hardware measurement (v810/)
+    - timer zero flag fix, ported from PCFXemu 5b28a36 (timer.cpp)
+    - KRAM write cost (Sauce's DIAG7 figure) as a setting, off
+      by default: no measurable effect on QoQ
+    - VDC data-port write cost as a setting, off by default.
+      36 clocks fixes two short black holds but nearly doubles
+      the VS-screen name dissolve (hardware 19 fields, stock 18,
+      36 clocks 34).
+
+  RESULT
+    Disc A intro 124.06 s (hardware 124.22 s), largest drift
+    0.36 s. Every load within 0.15 s of hardware. Pictures
+    identical to the stock drive model, frame order unchanged.
+    Linux and Windows builds give identical frames.
+
+  TESTED AND LEFT OUT
+    PCFXemu's seektime_pcfx.c (forward seeks too slow, backward
+    faster than forward, the capture shows the reverse); the
+    1.5 s spin-down threshold (no delay at 9.4 s idle on
+    hardware); the ef7b891 memory timing model (no change in
+    QoQ); a fixed per-command latency (fits as negative).
+
+================================================================
 SETTINGS REFERENCE
 ----------------------------------------------------------------
   All live in mednafen.cfg, no rebuild needed.
 
-  pcfx.cd_seek_scale     0.0-2.0    CD head travel delay
+  pcfx.cd_seek_scale        0.35    forward seek scale, 0 = off
+  pcfx.cd_seek_scale_back   0.69    backward seek scale
+  pcfx.cd_buffer_kb          240    drive buffer, stock 64
+  pcfx.cd_resume_level_kb     28    restart level, stock 0
+  pcfx.cd_resume_ms          280    restart delay, stock 0
+  pcfx.cd_reset_ms          1920    reset delay, stock 0
+  pcfx.cd_spindown_s        10.5    idle before spin-down
+  pcfx.cd_spinup_ms_per_s    300    spin-up per idle s, stock 0
+  pcfx.cd_spinup_max_ms     3900    spin-up limit
+  pcfx.cd_sector_scale       1.0    sector delivery scale
+  pcfx.v810_flag_stall         1    flag-use stall, stock 0
+  pcfx.kram_write_clocks       0    extra KRAM write clocks
+  pcfx.vdc_data_write_clocks   0    extra VDC write clocks
   pcfx.chroma_gain       0.5-2.0    colour purity, 1.0 = BT.601
   pcfx.gamma             0.5-2.0    midtone depth, 1.0 = off
   pcfx.ntsc              off | svideo | composite | rgb | monochrome
@@ -430,11 +512,21 @@ OPEN / UNRESOLVED
     tolerance is 9e-7. The FMV advance divisor matches hardware
     (both advance one frame per 6 fields).
 
-    Remaining candidates: Mednafen's generic frontend pacing
-    loop, which is shared by all cores and outside PC-FX code;
-    or error in the original stopwatch measurement.
+    UPDATE November 2026: for Queen of Queens the FMV
+    shortfall was the CD drive model, not pacing (section 8).
+    Disc A intro: stock 122.14 s, hardware 124.22 s, now
+    124.06 s. The clock measurements above still stand. The
+    Nirgends observation has not been retested.
 
-    Core timing work will NOT fix this.
+  SHORT BLACK HOLDS (about 0.1 s each, left as is)
+    The holds before the Disc B title and the Disc A intro run
+    about 0.1 s short. They follow VDC upload time;
+    pcfx.vdc_data_write_clocks 36 fixes them but slows the
+    VS-screen name dissolve, so it stays off. The Disc B
+    Scenario mid hold is 0.15 s short, cause not found.
+
+  SPIN-UP CURVE
+    Rests on two loads after long idle (13.4 s and 23.5 s).
 
   BLOCK-BOUNDARY OVER-READ (found, measured, NOT shipped)
     bits_bytes_left counts physical bytes, but FetchWidgywabbit

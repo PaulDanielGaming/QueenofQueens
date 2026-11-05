@@ -1,12 +1,12 @@
 # Mednafen PC-FX — Queen of Queens build
 
-A fork of [pce-devel/mednafenPceDev](https://github.com/pce-devel/mednafenPceDev) carrying five improvements to PC-FX emulation, produced while making the English translation patch for *AJW Queen of Queens*.
+A fork of [pce-devel/mednafenPceDev](https://github.com/pce-devel/mednafenPceDev) carrying five improvements to PC-FX emulation and a timing calibration against real hardware, produced while making the English translation patch for *AJW Queen of Queens*.
 
 Two of them are correctness bugs in Mednafen's PC-FX core that had gone unfound for around twenty years. Every fix here was measured against real hardware captures or a first-principles test, not tuned by eye, and **every claim below comes with a recipe to verify it yourself** from a stock tree.
 
 > **Scope and testing.** This fork was made while producing one translation patch, and **it has only been tested on *AJW Queen of Queens*.** That is a real limitation and worth stating plainly.
 >
-> The fixes themselves are not game-specific, with one exception. The grey block fix and the colour matrix correction are bugs in Mednafen's RAINBOW and KING code — they affect any PC-FX title using FMV or YUV graphics. The seek latency is general CD behaviour. The NTSC filter is a display option. **Only the confetti repair is shaped around this game**, because it is triggered by encoding defects in these particular video streams.
+> The fixes themselves are not game-specific, with one exception. The grey block fix and the colour matrix correction are bugs in Mednafen's RAINBOW and KING code — they affect any PC-FX title using FMV or YUV graphics. The seek latency and the drive timing are general CD behaviour, fitted on this game's discs. The NTSC filter is a display option. **Only the confetti repair is shaped around this game**, because it is triggered by encoding defects in these particular video streams.
 >
 > If you run other PC-FX titles with this build, reports are welcome. Set `pcfx.ntsc off`, `pcfx.chroma_gain 1.0` and `pcfx.gamma 1.0` to get stock behaviour back for comparison.
 
@@ -22,9 +22,10 @@ Two of them are correctness bugs in Mednafen's PC-FX core that had gone unfound 
 3. [NTSC signal simulation](#3-ntsc-signal-simulation--kingcpp--ntsc) — analog bandwidth filter
 4. [Confetti bar repair](#4-confetti-bar-repair--rainbowcpp) — corrupt strip detection
 5. [CD seek latency](#5-cd-seek-latency--scsicdcpp) — head travel delay
-6. [Settings](#settings)
-7. [Files changed and building](#files-changed)
-8. [What was ruled out](#what-was-ruled-out)
+6. [Hardware timing calibration](#6-hardware-timing-calibration) — drive and CPU timing against a 60 fps capture
+7. [Settings](#settings)
+8. [Files changed and building](#files-changed)
+9. [What was ruled out](#what-was-ruled-out)
 
 ---
 
@@ -221,7 +222,30 @@ Condemn a strip on either of two independent triggers: the decoded picture measu
 
 ## 5. CD seek latency — `scsicd.cpp`
 
-Mednafen jumps between FMV clips instantly. Real hardware moves a laser head, so there is a visible gap. Added a head-travel-proportional delay in `DoREADBase`, reusing the PC Engine CD seek model `get_pce_cd_seek_ms` from `seektime_pce.h`, by Dave Shadoff, scaled by `pcfx.cd_seek_scale`. Game music continues through the gap exactly as on hardware, confirming the delay is scoped to video-clip data reads. Calibrated by side-by-side comparison against a real PC-FX; 0.5–0.7 is the range where the two are indistinguishable by eye.
+Mednafen jumps between FMV clips instantly. Real hardware moves a laser head, so there is a visible gap. Added a head-travel-proportional delay in `DoREADBase`, reusing the PC Engine CD seek model `get_pce_cd_seek_ms` from `seektime_pce.h`, by Dave Shadoff, scaled by `pcfx.cd_seek_scale`. Game music continues through the gap exactly as on hardware, confirming the delay is scoped to video-clip data reads. It was first set by eye at 0.5. Since November 2026 it is split into a forward scale (0.35) and a backward scale (0.69), fitted to load gaps in a hardware capture (section 6).
+
+---
+
+## 6. Hardware timing calibration
+
+Frame-counted against a 60 fps capture of a near-new PC-FX running the original discs. Full method and numbers: `docs/PCFX_QoQ_HARDWARE_CALIBRATION_REPORT.txt`.
+
+**The problem.** Stock FMV ran short: the Disc A intro took 122.14 s against 124.22 s on hardware. Boot loads ran 3.6 s short and the Disc A match load 5.4 s short.
+
+**The cause was the drive, not the CPU.** On hardware the drive stops when its buffer is full, restarts only once the game has drained it to a low level, and delivers late after a restart, so the game briefly holds the picture. Mednafen's drive restarts the moment one sector fits, so FMV never waits. Loads were short because Mednafen's drive is ready at once after a reset and never spins down.
+
+**What changed:**
+
+- Drive read-ahead model: 240 KB buffer, 28 KB restart level, 280 ms restart delay.
+- Seek split into forward (0.35) and backward (0.69) scales on the PC Engine curve.
+- 1.92 s drive reset delay, and a spin-up delay after 10.5 s of idle.
+- V810 flag-use stall, ported from Sauce's [PCFXemu](https://github.com/gameblabla/pcfxemu) (cc3ab0b), based on David Shadoff's hardware measurement.
+- Timer zero flag fix, ported from PCFXemu (5b28a36).
+- KRAM and VDC data-port write costs, added as settings and off by default. The KRAM cost has no measurable effect on this game. A VDC cost of 36 clocks fixes two black holds that run about 0.1 s short, but it nearly doubles the VS-screen name dissolve (hardware 19 fields, stock 18, with the cost 34).
+
+**Result.** Disc A intro 124.06 s against 124.22 s on hardware. Every load is within 0.15 s of hardware. Pictures are identical to the stock drive model, and the Linux and Windows builds give identical frames.
+
+**Tested and left out:** PCFXemu's measured seek curve (`seektime_pcfx.c`), its 1.5 s spin-down threshold, its ef7b891 memory timing model and a fixed per-command latency. The report gives the reason for each.
 
 ---
 
@@ -239,8 +263,27 @@ pcfx.ntsc.brightness  -1.0–1.0    offset; the filter costs ~5%, this compensat
 pcfx.ntsc.contrast    -1.0–1.0    offset
 pcfx.ntsc.bleed       -2.0–2.0    offset
 pcfx.ntsc.fringing    -2.0–2.0    offset
-pcfx.cd_seek_scale     0.0–2.0    0 disables the seek delay
 ```
+
+Drive and CPU timing (section 6). Defaults are the calibrated values:
+
+```
+pcfx.cd_seek_scale          0.35   forward seek scale, 0 disables the seek delay
+pcfx.cd_seek_scale_back     0.69   backward seek scale
+pcfx.cd_buffer_kb           240    drive buffer, stock 64
+pcfx.cd_resume_level_kb     28     restart level, stock 0
+pcfx.cd_resume_ms           280    restart delay, stock 0
+pcfx.cd_reset_ms            1920   delay after a drive reset, stock 0
+pcfx.cd_spindown_s          10.5   idle time before the drive spins down
+pcfx.cd_spinup_ms_per_s     300    spin-up delay per second of idle beyond that, stock 0
+pcfx.cd_spinup_max_ms       3900   spin-up limit
+pcfx.cd_sector_scale        1.0    sector delivery scale
+pcfx.v810_flag_stall        1      V810 flag-use stall, stock 0
+pcfx.kram_write_clocks      0      extra clocks per KRAM data-port write
+pcfx.vdc_data_write_clocks  0      extra clocks per VDC data-port write
+```
+
+An older cfg may still hold `pcfx.cd_seek_scale 0.5` or `0.6`, or `pcfx.vdc_data_write_clocks 36`. Set them to the values above, or delete the lines so the defaults apply.
 
 Any NTSC mode other than `off` widens output from 256 to 602 pixels, so reduce `pcfx.xscale` to suit.
 
@@ -265,11 +308,17 @@ pcfx.scanlines 0
 ## Files changed
 
 ```
-mednafen/src/pcfx/king.cpp        colour matrix, gamma, NTSC hook
-mednafen/src/pcfx/pcfx.cpp        setting registrations
-mednafen/src/pcfx/rainbow.cpp     confetti repair, grey block fix
-mednafen/src/pcfx/ntsc/           snes_ntsc (LGPL, Shay Green)
-mednafen/src/cdrom/scsicd.cpp     seek latency
+mednafen/src/pcfx/king.cpp            colour matrix, gamma, NTSC hook, KRAM write cost
+mednafen/src/pcfx/king.h              KRAM write cost
+mednafen/src/pcfx/pcfx.cpp            setting registrations
+mednafen/src/pcfx/rainbow.cpp         confetti repair, grey block fix
+mednafen/src/pcfx/ntsc/               snes_ntsc (LGPL, Shay Green)
+mednafen/src/pcfx/timer.cpp           timer zero flag
+mednafen/src/pcfx/io-handler.inc      KRAM and VDC write costs
+mednafen/src/pcfx/mem-handler.inc     KRAM write cost
+mednafen/src/cdrom/scsicd.cpp         seek latency, drive read-ahead, reset and spin-down
+mednafen/src/hw_cpu/v810/v810_cpu.cpp, v810_cpu.h, v810_oploop.inc
+                                      V810 flag-use stall (PC-FX only)
 ```
 
 Everything else is stock. `snes_ntsc` is `#include`d into `king.cpp` rather than compiled separately, so **no build-system change is needed** — the CI runs `configure` and `make` without `autoreconf`, and a `Makefile.am` edit would be silently ignored.
@@ -284,7 +333,7 @@ Recorded so nobody re-treads it.
 
 **Grey blocks — eleven failed attempts before the cause was found.** Per-strip quantizer reset wrecked the BIOS logo (the base table is zero until the first 0xFF block). Resetting or restoring the quantizer on null runs destroyed every RAINBOW-decoded still, because stills are full of null runs. Y-only strip-local rescales posterised the BIOS logo, proving quantizer carry across strips is mandatory. Rounding changes, scaling changes, int16-overflow theories — all tested, all disproven. The lesson: **null runs must not touch the quantizer, and carry across strips is mandatory.** The answer came from reading the unread bitstream directly, not from more theorising.
 
-**Global speed drift (~1s over a two-minute FMV).** Measured the core directly: it reports 358,994.1 master cycles per frame against an ideal of 358,995 (263 lines × 1365) — three parts per million, 0.0004s over two minutes. Master clock correct at 21477272.72. Audio resampler tolerance 9×10⁻⁷. FMV advance divisor matches hardware. **The PC-FX core is not the cause.** If the drift is real it lives in Mednafen's generic frontend pacing loop or in the original stopwatch measurement. Core timing work will not fix it.
+**Global speed drift (~1s over a two-minute FMV).** Measured the core directly: it reports 358,994.1 master cycles per frame against an ideal of 358,995 (263 lines × 1365) — three parts per million, 0.0004s over two minutes. Master clock correct at 21477272.72. Audio resampler tolerance 9×10⁻⁷. FMV advance divisor matches hardware. The core clock is not the cause. **Update, November 2026:** for this game the FMV shortfall turned out to be the CD drive model, not pacing. The Disc A intro was 2.1 s short of hardware in stock Mednafen and is now 0.16 s short (section 6).
 
 **Washed-out blue on VDC menu text.** Deliberately left alone. The blue channel is already pinned at 254; the text reads pale because red and green are also high. Chroma gain cannot reach it. Candidates — the 4-bit palette chroma expansion reaching only 88% of full range, Y read too wide, or the palette format not being Y:8/U:4/V:4 — are indistinguishable without a hardware reference. The palette path feeds every VDC layer in every PC-FX game, so changing it on a guess is high blast radius with no oracle.
 
@@ -295,6 +344,7 @@ Recorded so nobody re-treads it.
 ## Documentation
 
 - `docs/MEDNAFEN_QoQ_CHANGE_LOG.txt` — the full record: every fix, every measurement, every rejected approach
+- `docs/PCFX_QoQ_HARDWARE_CALIBRATION_REPORT.txt` — the timing calibration against the hardware capture: method, fits, final checks
 - `docs/RAINBOW_trailing_rescale_bug.txt` — the grey block bug written up for other developers
 - `docs/RAINBOW_probe_howto.txt` — reproduce the grey block finding from any build in ten minutes
 - `docs/QoQ_PATCH_TECHNICAL_RECORD.txt` — the game side: font offsets, text structure, the results-screen kanji
@@ -304,6 +354,6 @@ Recorded so nobody re-treads it.
 
 ## Licence
 
-Mednafen is GPL-2, © Mednafen Team. `snes_ntsc` is LGPL, © 2006-2007 Shay Green. The PC Engine CD seek model in `seektime_pce.h`, which the seek latency builds on, is © 2022 Dave Shadoff. PC-FX modifications are offered under the same terms as the code they modify.
+Mednafen is GPL-2, © Mednafen Team. `snes_ntsc` is LGPL, © 2006-2007 Shay Green. The PC Engine CD seek model in `seektime_pce.h`, which the seek latency builds on, is © 2022 Dave Shadoff. The V810 flag-use stall and the timer zero flag fix are ported from Sauce's (gameblabla) [PCFXemu](https://github.com/gameblabla/pcfxemu), commits cc3ab0b and 5b28a36; the stall timing is David Shadoff's hardware measurement. PC-FX modifications are offered under the same terms as the code they modify.
 
 — Paul Daniel
