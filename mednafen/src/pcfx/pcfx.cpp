@@ -210,9 +210,10 @@ void ForceEventUpdates(const uint32 timestamp)
  //printf("FEU: %d %d %d %d\n", next_pad_ts, next_timer_ts, next_adpcm_ts, next_king_ts);
 }
 
-// QoQ private build: CPU cost of a write to a VDC (HuC6270) data port (0x404/0x504), on top of the stock 2 clocks.
-// Calibrated against a 60 fps capture of a real PC-FX: graphics uploads in the black holds before the Disc B title
-// and the Disc A intro run at hardware speed with 36 extra clocks per data-port write. Setting pcfx.vdc_data_write_clocks.
+// QoQ private build: extra CPU cost of a write to a VDC (HuC6270) data port (0x404/0x504), on top of the stock 2 clocks.
+// Setting pcfx.vdc_data_write_clocks, default 0 (stock). 36 matches the black holds before the Disc B title and the
+// Disc A intro in a 60 fps real PC-FX capture, but doubles the VS-screen name dissolve (hardware 19 fields, stock 18,
+// 36 clocks 34), so the default stays at stock timing.
 static uint32 VDCDataWriteExtraClocks = 0;
 
 #include "io-handler.inc"
@@ -1183,7 +1184,7 @@ static const MDFNSetting PCFXSettings[] =
   { "pcfx.cd_spinup_max_ms", MDFNSF_NOFLAGS, gettext_noop("Upper limit in milliseconds of the CD drive spin-up delay."), gettext_noop("3900 is the delay at the longest idle in the calibration capture (23.5 s)."), MDFNST_FLOAT, "3900", "0", "10000" },
   { "pcfx.cd_sector_scale", MDFNSF_NOFLAGS, gettext_noop("Scale factor for the time the CD drive takes to deliver each sector."), gettext_noop("1.0 is the nominal 2x data rate and the calibrated value. Above 1.0 slows sustained reads."), MDFNST_FLOAT, "1.0", "0.5", "2.0" },
   { "pcfx.kram_write_clocks", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Extra CPU clocks per write to KING's KRAM data port."), gettext_noop("Stock timing charges about 4 clocks per back-to-back OUT.H to KRAM; gameblabla measured about 12 on a real PC-FX (PCFXemu DIAG7). 0 is stock timing. No measurable effect on Queen of Queens FMV timing."), MDFNST_UINT, "0", "0", "64" },
-  { "pcfx.vdc_data_write_clocks", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Extra CPU clocks per write to a VDC data port."), gettext_noop("Added to the stock 2 clocks for writes to the HuC6270 data ports (0x404, 0x504). 36 is calibrated against graphics uploads in a real PC-FX capture of Queen of Queens. 0 is stock timing."), MDFNST_UINT, "36", "0", "256" },
+  { "pcfx.vdc_data_write_clocks", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("Extra CPU clocks per write to a VDC data port."), gettext_noop("Added to the stock 2 clocks for writes to the HuC6270 data ports (0x404, 0x504). 0 is stock timing and matches the Queen of Queens VS-screen name dissolve on a real PC-FX; 36 matches its pre-title black holds but slows the dissolve."), MDFNST_UINT, "0", "0", "256" },
   { "pcfx.cd_buffer_kb", MDFNSF_EMU_STATE | MDFNSF_UNTRUSTED_SAFE, gettext_noop("CD drive read-ahead buffer size in kilobytes."), gettext_noop("240 is calibrated against a real PC-FX capture of Queen of Queens; 64 is stock Mednafen. Save states made with a different size do not restore the drive buffer."), MDFNST_UINT, "240", "16", "1024" },
   { "pcfx.cd_resume_level_kb", MDFNSF_NOFLAGS, gettext_noop("Buffered data level in kilobytes at which the CD drive restarts reading after its buffer filled."), gettext_noop("28 is calibrated against a real PC-FX capture of Queen of Queens. 0 restarts as soon as one sector fits (stock Mednafen)."), MDFNST_UINT, "28", "0", "1024" },
   { "pcfx.cd_resume_ms", MDFNSF_NOFLAGS, gettext_noop("Delay in milliseconds before the CD drive delivers data again after restarting."), gettext_noop("280 is calibrated against a real PC-FX capture of Queen of Queens. 0 is stock Mednafen."), MDFNST_FLOAT, "280", "0", "1000" },
