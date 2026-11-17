@@ -378,6 +378,15 @@ Mednafen PC-FX : change log for the Queen of Queens build
     pcfx.ntsc.brightness, which compensates after the gamma
     stage so deep colours stay deep while the picture lifts.
 
+  EDGE GATE
+    The filter is applied by local contrast, measured as the
+    luma range across five source pixels. Below
+    pcfx.ntsc.edge_lo (default 14) a pixel gets no edge
+    reconstruction, so the console's own gradient steps are not
+    sharpened into visible bands. At or above pcfx.ntsc.edge_hi
+    (default 44) the filter applies in full; between the two it
+    fades in. Both at 0 filters every pixel.
+
 ================================================================
 7. king.cpp — MIDTONE GAMMA
 ----------------------------------------------------------------
@@ -486,10 +495,15 @@ SETTINGS REFERENCE
                                     Raising above 0 does nothing
                                     measurable - 0 already passes
                                     everything the signal carries.
-  pcfx.ntsc.brightness  -1.0-1.0    offset; compensates the filter
+  pcfx.ntsc.brightness  -1.0-1.0    offset; compensates the filter,
+                                    default 0.05
   pcfx.ntsc.contrast    -1.0-1.0    offset
   pcfx.ntsc.bleed       -2.0-2.0    offset
   pcfx.ntsc.fringing    -2.0-2.0    offset
+  pcfx.ntsc.edge_lo      0-255      edge gate, no filtering below
+                                    this contrast, default 14
+  pcfx.ntsc.edge_hi      0-255      edge gate, full filtering from
+                                    this contrast, default 44
 
   Anything but ntsc=off widens output 256 -> 602, so xscale
   needs reducing to keep the same window size.

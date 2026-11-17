@@ -8,7 +8,7 @@ Two of them are correctness bugs in Mednafen's PC-FX core that had gone unfound 
 >
 > The fixes themselves are not game-specific, with one exception. The grey block fix and the colour matrix correction are bugs in Mednafen's RAINBOW and KING code — they affect any PC-FX title using FMV or YUV graphics. The seek latency and the drive timing are general CD behaviour, fitted on this game's discs. The NTSC filter is a display option. **Only the confetti repair is shaped around this game**, because it is triggered by encoding defects in these particular video streams.
 >
-> If you run other PC-FX titles with this build, reports are welcome. Set `pcfx.ntsc off`, `pcfx.chroma_gain 1.0` and `pcfx.gamma 1.0` to get stock behaviour back for comparison.
+> If you run other PC-FX titles with this build, reports are welcome. For comparison, `pcfx.ntsc off`, `pcfx.chroma_gain 1.0` and `pcfx.gamma 1.0` turn off the display options and leave plain BT.601 colour (stock Mednafen's analog matrix is not selectable). The stock value of each drive and CPU timing setting is listed under [Settings](#settings).
 
 **Patch:** [romhacking.net](https://www.romhacking.net/translations/7504/) · [archive.org](https://archive.org/details/pauldaniel-PCFX-english-translations)
 **Footage:** [youtube.com/@paul_daniel_gaming](https://www.youtube.com/@paul_daniel_gaming)
@@ -192,7 +192,9 @@ Mean slope at defaults is essentially unchanged from unfiltered, so overall deta
 
 Input is the core's RGB888 line, reduced to RGB16 (rounded, not truncated — a bare mask biases the whole picture darker by about 1%). Output is 32-bit straight back into the surface. Geometry: 3 pixels in, 7 out, so 256 becomes 602; the PC-FX framebuffer is already 1024 wide so nothing reallocates. Only the 256-wide mode is filtered.
 
-Five modes — `off`, `svideo`, `composite`, `rgb`, `monochrome` — and seven tuning values. The tuning values are **offsets from the chosen preset**, so 0.0 means "use the preset as its author intended." (An earlier revision assigned them instead, which clobbered S-Video's own sharpness and switched its fringing back on. Fixed.)
+Five modes — `off`, `svideo`, `composite`, `rgb`, `monochrome` — and six tuning values. The tuning values are **offsets from the chosen preset**, so 0.0 means "use the preset as its author intended." (An earlier revision assigned them instead, which clobbered S-Video's own sharpness and switched its fringing back on. Fixed.)
+
+An edge gate decides where the filter applies. It measures luma contrast across five source pixels. Below `pcfx.ntsc.edge_lo` (default 14) a pixel gets no edge reconstruction, so the console's own gradient steps are not sharpened into visible bands. At or above `pcfx.ntsc.edge_hi` (default 44) the filter applies in full, and between the two it fades in. Setting both to 0 filters every pixel.
 
 ### Verify it yourself
 
@@ -259,10 +261,12 @@ pcfx.gamma             0.5–2.0    midtone depth, 1.0 = off, default 0.97
 pcfx.ntsc              off | svideo | composite | rgb | monochrome
 pcfx.ntsc.sharpness   -2.0–2.0    offset from preset; lower softens edges
 pcfx.ntsc.resolution  -2.0–2.0    offset; lowering works, raising above 0 does nothing
-pcfx.ntsc.brightness  -1.0–1.0    offset; the filter costs ~5%, this compensates
+pcfx.ntsc.brightness  -1.0–1.0    offset; the filter costs ~5%, default 0.05 compensates
 pcfx.ntsc.contrast    -1.0–1.0    offset
 pcfx.ntsc.bleed       -2.0–2.0    offset
 pcfx.ntsc.fringing    -2.0–2.0    offset
+pcfx.ntsc.edge_lo      0–255      edge gate, no filtering below this contrast, default 14
+pcfx.ntsc.edge_hi      0–255      edge gate, full filtering from this contrast, default 44
 ```
 
 Drive and CPU timing (section 6). Defaults are the calibrated values:
@@ -287,13 +291,13 @@ An older cfg may still hold `pcfx.cd_seek_scale 0.5` or `0.6`, or `pcfx.vdc_data
 
 Any NTSC mode other than `off` widens output from 256 to 602 pixels, so reduce `pcfx.xscale` to suit.
 
-Settled values for an S-Video → RetroTink 2x → CRT reference (see `settled_config/`):
+Settled values for an S-Video → RetroTink 2x → CRT reference:
 
 ```
 pcfx.ntsc rgb
-pcfx.ntsc.sharpness -0.5
+pcfx.ntsc.sharpness -0.20
 pcfx.ntsc.resolution -0.5
-pcfx.ntsc.brightness 0.06
+pcfx.ntsc.brightness 0.05
 pcfx.gamma 0.97
 pcfx.chroma_gain 0.96
 pcfx.scanlines 0
@@ -348,7 +352,6 @@ Recorded so nobody re-treads it.
 - `docs/RAINBOW_trailing_rescale_bug.txt` — the grey block bug written up for other developers
 - `docs/RAINBOW_probe_howto.txt` — reproduce the grey block finding from any build in ten minutes
 - `docs/QoQ_PATCH_TECHNICAL_RECORD.txt` — the game side: font offsets, text structure, the results-screen kanji
-- `settled_config/` — the working cfg and a summary of why each value is what it is
 
 ---
 
