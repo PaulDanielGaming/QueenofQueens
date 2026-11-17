@@ -1,7 +1,7 @@
 ================================================================
 Mednafen PC-FX : change log for the Queen of Queens build
                : Paul Daniel
-               : last updated 2026-11-04
+               : last updated 2026-11-17
 ================================================================
 
   Five improvements, across four files plus one added library,
@@ -398,6 +398,12 @@ Mednafen PC-FX : change log for the Queen of Queens build
   that matters — a change that improves one colour by wrecking
   another. The face has red, blue and skintone together.
 
+  DEFAULTS (November 2026)
+    chroma_gain 0.96, gamma 0.97, set by side-by-side viewing.
+    The earlier 1.08 / 0.85 read too heavy. Red stays clearly
+    stronger than stock Mednafen (chroma 66 against 59 on Aja
+    Kong's singlet).
+
 ================================================================
 8. HARDWARE TIMING CALIBRATION                   (November 2026)
 ----------------------------------------------------------------
@@ -470,8 +476,10 @@ SETTINGS REFERENCE
   pcfx.v810_flag_stall         1    flag-use stall, stock 0
   pcfx.kram_write_clocks       0    extra KRAM write clocks
   pcfx.vdc_data_write_clocks   0    extra VDC write clocks
-  pcfx.chroma_gain       0.5-2.0    colour purity, 1.0 = BT.601
-  pcfx.gamma             0.5-2.0    midtone depth, 1.0 = off
+  pcfx.chroma_gain       0.5-2.0    colour purity, 1.0 = BT.601,
+                                    default 0.96
+  pcfx.gamma             0.5-2.0    midtone depth, 1.0 = off,
+                                    default 0.97
   pcfx.ntsc              off | svideo | composite | rgb | monochrome
   pcfx.ntsc.sharpness   -2.0-2.0    offset; lower softens edges
   pcfx.ntsc.resolution  -2.0-2.0    offset; lower cuts detail.

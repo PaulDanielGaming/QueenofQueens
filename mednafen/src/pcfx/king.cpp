@@ -57,7 +57,7 @@
 // edit to Makefile.am.inc would never take effect.
 #include "ntsc/snes_ntsc.inc"
 
-static double PCFX_ChromaGain = 1.08;   // pcfx.chroma_gain
+static double PCFX_ChromaGain = 0.96;   // pcfx.chroma_gain
 static uint8 PCFX_GammaLUT[256];
 
 static void PCFX_RebuildGammaLUT(double gamma)
@@ -2653,7 +2653,9 @@ static void RebuildUVLUT(const MDFN_PixelFormat &format)
    // CHROMA_GAIN trims residual blue out of saturated reds, which is what
    // turns bright red into crimson. 1.0 is plain BT.601; 255/224 = 1.1384
    // would be the full limited-range-to-full-range chroma correction.
-   // 1.08 sits about halfway - a deliberate, subtle enrichment.
+   // Default 0.96 with pcfx.gamma 0.97, set by side-by-side viewing in
+   // November 2026: red stays clearly stronger than stock Mednafen, without
+   // the heavier look of the earlier 1.08 / 0.85 defaults.
    //
    // Also rounds instead of truncating toward zero (the old FIXME).
    const double CHROMA_GAIN = PCFX_ChromaGain;

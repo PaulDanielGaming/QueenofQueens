@@ -254,8 +254,8 @@ Frame-counted against a 60 fps capture of a near-new PC-FX running the original 
 All in `mednafen.cfg`, no rebuild needed:
 
 ```
-pcfx.chroma_gain       0.5–2.0    colour purity, 1.0 = plain BT.601
-pcfx.gamma             0.5–2.0    midtone depth, 1.0 = off
+pcfx.chroma_gain       0.5–2.0    colour purity, 1.0 = plain BT.601, default 0.96
+pcfx.gamma             0.5–2.0    midtone depth, 1.0 = off, default 0.97
 pcfx.ntsc              off | svideo | composite | rgb | monochrome
 pcfx.ntsc.sharpness   -2.0–2.0    offset from preset; lower softens edges
 pcfx.ntsc.resolution  -2.0–2.0    offset; lowering works, raising above 0 does nothing
@@ -294,8 +294,8 @@ pcfx.ntsc rgb
 pcfx.ntsc.sharpness -0.5
 pcfx.ntsc.resolution -0.5
 pcfx.ntsc.brightness 0.06
-pcfx.gamma 0.84
-pcfx.chroma_gain 1.04
+pcfx.gamma 0.97
+pcfx.chroma_gain 0.96
 pcfx.scanlines 0
 ```
 
