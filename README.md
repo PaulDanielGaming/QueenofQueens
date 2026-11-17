@@ -2,7 +2,7 @@
 
 A fork of [pce-devel/mednafenPceDev](https://github.com/pce-devel/mednafenPceDev) carrying five improvements to PC-FX emulation and a timing calibration against real hardware, produced while making the English translation patch for *AJW Queen of Queens*.
 
-Two of them are correctness bugs in Mednafen's PC-FX core that had gone unfound for around twenty years. Every fix here was measured against real hardware captures or a first-principles test, not tuned by eye, and **every claim below comes with a recipe to verify it yourself** from a stock tree.
+Two of them are correctness bugs in Mednafen's PC-FX core that had gone unfound for around twenty years. Every fix here was measured against real hardware captures or a first-principles test. Only the display option defaults (colour strength and the NTSC filter values) were set by side-by-side viewing. **Every claim below comes with a recipe to verify it yourself** from a stock tree.
 
 > **Scope and testing.** This fork was made while producing one translation patch, and **it has only been tested on *AJW Queen of Queens*.** That is a real limitation and worth stating plainly.
 >
