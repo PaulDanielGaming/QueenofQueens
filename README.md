@@ -196,6 +196,8 @@ Five modes — `off`, `svideo`, `composite`, `rgb`, `monochrome` — and six tun
 
 An edge gate decides where the filter applies. It measures luma contrast across five source pixels. Below `pcfx.ntsc.edge_lo` (default 14) a pixel gets no edge reconstruction, so the console's own gradient steps are not sharpened into visible bands. At or above `pcfx.ntsc.edge_hi` (default 44) the filter applies in full, and between the two it fades in. Setting both to 0 filters every pixel.
 
+Each line is padded with its own first and last pixels rather than the library's black, so the picture edges do not darken.
+
 ### Verify it yourself
 
 Set `pcfx.ntsc rgb` and look at any long-haired wrestler on the select screen. Then set it `off`. The difference is not subtle.

@@ -1,7 +1,7 @@
 ================================================================
 Mednafen PC-FX : change log for the Queen of Queens build
                : Paul Daniel
-               : last updated 2026-11-17
+               : last updated 2026-11-19
 ================================================================
 
   Five improvements, across four files plus one added library,
@@ -386,6 +386,19 @@ Mednafen PC-FX : change log for the Queen of Queens build
     sharpened into visible bands. At or above pcfx.ntsc.edge_hi
     (default 44) the filter applies in full; between the two it
     fades in. Both at 0 filters every pixel.
+
+  EDGE PADDING (November 2026)
+    Symptom: ragged dark strips down the left and right sides of
+    the picture, first seen in HuneX Fighters; stock Mednafen
+    edges are clean.
+    Cause: snes_ntsc pads each line with black, so the first and
+    last few output pixels ramp from and to black. The edge gate
+    passes the filtered pixel only where the picture has
+    contrast, so the ramp showed on some lines and not others.
+    Fix: ntsc/snes_ntsc.inc pads each line with its own first and
+    last pixels. On 29 QoQ frames, lines with edge pixels more
+    than 25 levels darker than the source edge: 152 before, 0
+    after. Pixels away from the edges unchanged.
 
 ================================================================
 7. king.cpp — MIDTONE GAMMA

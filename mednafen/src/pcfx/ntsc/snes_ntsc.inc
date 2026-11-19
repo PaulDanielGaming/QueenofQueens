@@ -142,8 +142,14 @@ void snes_ntsc_blit( snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long 
 	for ( ; in_height; --in_height )
 	{
 		SNES_NTSC_IN_T const* line_in = input;
+		/* PC-FX build: pad with the line's own first and last pixels rather
+		than black. Black padding made the first and last few output pixels
+		ramp from and to black, which the edge gate in king.cpp exposed on
+		some lines and not others, leaving ragged dark strips at both sides. */
+		SNES_NTSC_IN_T const edge_first = SNES_NTSC_ADJ_IN( input [0] );
+		SNES_NTSC_IN_T const edge_last  = SNES_NTSC_ADJ_IN( input [in_width - 1] );
 		SNES_NTSC_BEGIN_ROW( ntsc, burst_phase,
-				snes_ntsc_black, snes_ntsc_black, SNES_NTSC_ADJ_IN( *line_in ) );
+				edge_first, edge_first, edge_first );
 		snes_ntsc_out_t* restrict line_out = (snes_ntsc_out_t*) rgb_out;
 		int n;
 		++line_in;
@@ -169,19 +175,19 @@ void snes_ntsc_blit( snes_ntsc_t const* ntsc, SNES_NTSC_IN_T const* input, long 
 		}
 		
 		/* finish final pixels */
-		SNES_NTSC_COLOR_IN( 0, snes_ntsc_black );
+		SNES_NTSC_COLOR_IN( 0, edge_last );
 		SNES_NTSC_RGB_OUT( 0, line_out [0], SNES_NTSC_OUT_DEPTH );
 		SNES_NTSC_RGB_OUT( 1, line_out [1], SNES_NTSC_OUT_DEPTH );
-		
-		SNES_NTSC_COLOR_IN( 1, snes_ntsc_black );
+
+		SNES_NTSC_COLOR_IN( 1, edge_last );
 		SNES_NTSC_RGB_OUT( 2, line_out [2], SNES_NTSC_OUT_DEPTH );
 		SNES_NTSC_RGB_OUT( 3, line_out [3], SNES_NTSC_OUT_DEPTH );
-		
-		SNES_NTSC_COLOR_IN( 2, snes_ntsc_black );
+
+		SNES_NTSC_COLOR_IN( 2, edge_last );
 		SNES_NTSC_RGB_OUT( 4, line_out [4], SNES_NTSC_OUT_DEPTH );
 		SNES_NTSC_RGB_OUT( 5, line_out [5], SNES_NTSC_OUT_DEPTH );
 		SNES_NTSC_RGB_OUT( 6, line_out [6], SNES_NTSC_OUT_DEPTH );
-		
+
 		burst_phase = (burst_phase + 1) % snes_ntsc_burst_count;
 		input += in_row_width;
 		rgb_out = (char*) rgb_out + out_pitch;
